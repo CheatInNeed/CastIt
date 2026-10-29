@@ -136,3 +136,17 @@ describe('MAIN-world hooks', () => {
     URL.createObjectURL = originalCreate;
   });
 });
+
+describe('highlightVideo', () => {
+  it('outlines a video until cleared, without catching clicks', async () => {
+    const { highlightVideo, clearHighlight } = await import('../../apps/extension/src/lib/highlight.ts');
+    const v = addVideo(document.body, 'https://e.com/a.mp4');
+    v.getBoundingClientRect = () => ({ width: 640, height: 360, top: 10, left: 10, bottom: 370, right: 650 }) as DOMRect;
+    highlightVideo(v);
+    expect(document.querySelectorAll('castit-highlight')).toHaveLength(1);
+    highlightVideo(v); // re-highlighting replaces, never stacks
+    expect(document.querySelectorAll('castit-highlight')).toHaveLength(1);
+    clearHighlight();
+    expect(document.querySelectorAll('castit-highlight')).toHaveLength(0);
+  });
+});

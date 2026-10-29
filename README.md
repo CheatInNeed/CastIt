@@ -244,7 +244,7 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 
 - **What has been tested:** Phase 1 casting was tested by the user and works. Phase 2's detection is unit-tested, and its MAIN-world hooks were checked against real hls.js playback in a browser.
 - **What the Phase 3 companion test covered:** end-to-end tests against a mock upstream (pairing, auth, relay, Range, redirects, cancellation, device binding, SSRF). Real public HLS was relayed and played back in a cross-origin hls.js player (1080p, no errors).
-- **What has not been tested:** the companion with a real Chromecast. The receiver loads media over plain `http://` from your LAN; Cast devices normally allow this, but it is unverified. The companion answers Private Network Access preflights in case the receiver requires them.
+- **Verified on a real Chromecast:** a DASH stream was relayed through the companion and played on the TV, so the receiver does accept media over plain `http://` from your LAN. The companion also answers Private Network Access preflights in case a receiver requires them.
 - **Firewall prompt:** your OS firewall (macOS asks on first run) must allow incoming connections to Node on port 47801, or the Chromecast can't reach the relay.
 - **Wrong LAN address:** if you are on a VPN or have several network adapters, the auto-detected LAN address may be one the Chromecast can't reach. Use `npm run companion -- --public-host <your-lan-ip>`.
 - **Device binding on networks that change IPs:** a session is bound to one device IP. If the Chromecast changes IP mid-cast, cast again to get a new session.
@@ -268,7 +268,7 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
   - the player's ▶ sent one toggle and its timeline sent one seek;
   - a TV "paused at 120 s" moved the page there without echoing back;
   - a disconnect resumed the page at the TV's position.
-- **What has not been tested for Phase 5:** with the extension loaded against a real Chromecast.
+- **Verified on a real Chromecast:** the page's player as remote (play/pause and seeking from the page), handing playback back to the page after a disconnect, and an embedded cross-origin player as remote.
 - **Page UI while casting:** the page's player shows "paused" the whole time. The badge shows the TV's real state.
 - **Players without a `<video>` element:** players that draw on a canvas or control the TV through their own Cast integration can't be synced; use Castit's controls.
 - **Players' own JavaScript APIs** (e.g. the YouTube iframe API) are not used; Castit works with the `<video>` element inside the frame.

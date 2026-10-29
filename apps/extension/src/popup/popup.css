@@ -31,6 +31,11 @@
   box-sizing: border-box;
 }
 
+/* Author display rules (e.g. .row { display: flex }) must not un-hide [hidden] elements. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   width: 380px;
@@ -82,6 +87,12 @@ button:disabled {
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Status pills keep their text; long titles next to them wrap instead. */
+.bar .pill,
+.row > .pill {
+  flex-shrink: 0;
 }
 
 .pill.on {
@@ -307,4 +318,79 @@ select,
 
 #companion-hint {
   margin: 8px 0 6px;
+}
+
+.pills {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+button.pill {
+  background: transparent;
+  cursor: pointer;
+}
+
+.pill.warn {
+  color: var(--warn);
+  border-color: currentColor;
+}
+
+.notice.warn {
+  color: var(--warn);
+  border-color: currentColor;
+}
+
+.hint {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.candidate:hover,
+.candidate:focus-within {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px;
+}
+
+.candidate.selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 6px;
+}
+
+.candidate .where {
+  grid-column: 2;
+  font-size: 12px;
+}
+
+.where.playing {
+  color: var(--ok);
+}
+
+.tag.on-tv {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+#others {
+  margin-top: 6px;
+}
+
+#others > summary {
+  cursor: pointer;
+  padding: 4px;
+}
+
+#pair-result.ok {
+  color: var(--ok);
+}
+
+#pair-result.bad {
+  color: var(--bad);
+}
+
+.candidate .hover-note {
+  grid-column: 2;
+  font-size: 11px;
+  color: var(--warn);
 }

@@ -57,3 +57,20 @@ export const PLAYBACK_TIMEOUT: CastError = {
   code: 'PLAYBACK_TIMEOUT',
   message: 'The Chromecast accepted the stream, but playback did not start within 30 seconds.',
 };
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/**
+ * Cast device names arrive HTML-escaped (e.g. "Peter&#39;s TV"). Decodes named and numeric
+ * entities into plain text; the result is only ever shown via textContent.
+ */
+export function decodeEntities(text: string | undefined): string | undefined {
+  if (!text) return text;
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
+    if (code[0] === '#') {
+      const n = code[1]!.toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : match;
+    }
+    return ENTITIES[code.toLowerCase()] ?? match;
+  });
+}

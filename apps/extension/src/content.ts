@@ -10,20 +10,17 @@ import type {
   SyncStartResponse,
 } from '@castit/shared';
 import { describeVideo, findVideos, isReportable, markPlayed, pauseAll, videoKey } from './lib/detection.ts';
+import { clearHighlight, highlightVideo } from './lib/highlight.ts';
 import { SyncSession } from './lib/sync-session.ts';
 import { MAIN_EVENT, type MainWorldHint } from './main-world.ts';
 
-declare global {
-  interface Window {
-    __castitContentLoaded?: boolean;
-  }
-}
-
-// Guard against double injection (manifest injection + scripting.executeScript on install).
-if (!window.__castitContentLoaded) {
-  window.__castitContentLoaded = true;
-  init();
-}
+/**
+ * Each injection replaces any earlier copy in this frame. When Castit is reloaded or updated,
+ * Chrome leaves the old copy running in open pages (its link to the extension is dead) and Castit
+ * injects the new one; the old copy hears this event and shuts itself down. The same applies to
+ * the double injection on install (manifest + scripting.executeScript).
+ */
+const RETIRE_EVENT = 'castit:content-retire';
 
 const MEDIA_EVENTS = ['play', 'pause', 'loadedmetadata', 'emptied', 'ended', 'durationchange', 'seeked', 'error'];
 
@@ -65,8 +62,11 @@ function init(): void {
   });
   const observeOptions: MutationObserverInit = { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] };
 
+  const watched: Array<Document | ShadowRoot> = [];
+
   /** Media events don't bubble, so each root (document or shadow root) gets capture listeners. */
   const watchRoot = (root: Document | ShadowRoot) => {
+    watched.push(root);
     for (const type of MEDIA_EVENTS) root.addEventListener(type, onMediaEvent, true);
     root.addEventListener('playing', onPlaying, true);
     observer.observe(root, observeOptions);
@@ -105,7 +105,17 @@ function init(): void {
       videos,
       emeKeySystems: [...emeKeySystems],
     };
-    chrome.runtime.sendMessage(message).catch(() => undefined);
+    send(message);
+  };
+
+  /** Sends to the background; a copy whose extension was reloaded shuts itself down instead. */
+  const send = (message: ContentReportMessage | ContentRemoteMessage | ContentSyncLostMessage) => {
+    try {
+      if (!chrome.runtime?.id) return retire();
+      chrome.runtime.sendMessage(message).catch(() => undefined);
+    } catch {
+      retire();
+    }
   };
 
   function schedule(delay: number): void {
@@ -116,7 +126,7 @@ function init(): void {
     timer = setTimeout(report, delay);
   }
 
-  document.addEventListener(MAIN_EVENT, (e) => {
+  const onMainHint = (e: Event) => {
     let hint: MainWorldHint;
     try {
       hint = JSON.parse(String((e as CustomEvent).detail)) as MainWorldHint;
@@ -135,7 +145,8 @@ function init(): void {
       shadowSeen = true;
       schedule(400);
     }
-  });
+  };
+  document.addEventListener(MAIN_EVENT, onMainHint);
 
   watchRoot(document);
 
@@ -160,11 +171,22 @@ function init(): void {
     return described[0]?.v;
   };
 
-  chrome.runtime.onMessage.addListener((message: BackgroundToContent, _sender, sendResponse) => {
+  const onMessage = (message: BackgroundToContent, _sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => {
     switch (message.type) {
       case 'content/refresh':
         report();
         break;
+      case 'content/highlight': {
+        if (!message.videoKey) {
+          clearHighlight();
+          break;
+        }
+        const video = findVideos(document, true).find((f) => videoKey(f.video) === message.videoKey)?.video;
+        if (video) highlightVideo(video);
+        else clearHighlight();
+        sendResponse({ found: !!video });
+        break;
+      }
       case 'content/pause-local':
         if (pauseAll(findVideos(document, true).map((f) => f.video)) > 0) schedule(100);
         break;
@@ -182,10 +204,8 @@ function init(): void {
         sync = new SyncSession(video, {
           requestId,
           deviceName: message.deviceName,
-          send: (command) =>
-            chrome.runtime.sendMessage({ type: 'content/remote', requestId, command } satisfies ContentRemoteMessage).catch(() => undefined),
-          onLost: (reason) =>
-            chrome.runtime.sendMessage({ type: 'content/sync-lost', requestId, reason } satisfies ContentSyncLostMessage).catch(() => undefined),
+          send: (command) => send({ type: 'content/remote', requestId, command }),
+          onLost: (reason) => send({ type: 'content/sync-lost', requestId, reason }),
         });
         sendResponse({ ok: true, videoKey: videoKey(video) } satisfies SyncStartResponse);
         break;
@@ -202,7 +222,33 @@ function init(): void {
         break;
     }
     return false;
-  });
+  };
+  chrome.runtime.onMessage.addListener(onMessage);
+
+  /** Stops this copy completely (a newer copy took over, or the extension was reloaded). */
+  function retire(): void {
+    document.removeEventListener(RETIRE_EVENT, retire);
+    for (const root of watched) {
+      for (const type of MEDIA_EVENTS) root.removeEventListener(type, onMediaEvent, true);
+      root.removeEventListener('playing', onPlaying, true);
+    }
+    observer.disconnect();
+    document.removeEventListener(MAIN_EVENT, onMainHint);
+    if (timer !== undefined) clearTimeout(timer);
+    try {
+      chrome.runtime.onMessage.removeListener(onMessage);
+    } catch {
+      /* extension context already gone */
+    }
+    sync?.stop('replaced', null, false);
+    sync = null;
+    clearHighlight();
+  }
+  document.addEventListener(RETIRE_EVENT, retire);
 
   report();
 }
+
+// Start last, after every module-level constant above is initialised.
+document.dispatchEvent(new Event(RETIRE_EVENT));
+init();

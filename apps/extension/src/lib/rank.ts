@@ -35,6 +35,43 @@ export function dedupeCandidates(list: NetworkCandidate[]): NetworkCandidate[] {
   return [...byKey.values()];
 }
 
+const SERIES_FILE = /^(.*?)(\d+)(\.(?:m4v|mp4|m4s|m4a|ts|aac|webm|cmfv|cmfa|mp3))$/i;
+
+/**
+ * Ids of files that are numbered pieces of one stream (e.g. DASH `video_1.m4v`, `video_2.m4v`, …):
+ * at least three files in the same folder and frame whose names differ only by a running number,
+ * none of them played directly by a <video> element. Real separate videos (episode1.mp4,
+ * episode2.mp4) are rarely all downloaded, and when one is playing it is referenced by the page.
+ */
+export function numberedSeries(candidates: NetworkCandidate[], playedUrls: Set<string>): Set<string> {
+  const groups = new Map<string, Array<{ id: string; n: number; key: string }>>();
+  for (const c of candidates) {
+    if (c.kind === 'hls' || c.kind === 'dash') continue;
+    const url = safeUrl(c.url);
+    if (!url) continue;
+    const slash = url.pathname.lastIndexOf('/');
+    const m = SERIES_FILE.exec(url.pathname.slice(slash + 1));
+    if (!m) continue;
+    const group = `${c.frameId}|${url.host}${url.pathname.slice(0, slash + 1)}${m[1]}#${m[3]!.toLowerCase()}`;
+    const list = groups.get(group) ?? [];
+    list.push({ id: c.id, n: Number(m[2]), key: dedupeKey(c.url) });
+    groups.set(group, list);
+  }
+  const ids = new Set<string>();
+  for (const list of groups.values()) {
+    if (list.length < 3 || list.some((item) => playedUrls.has(item.key))) continue;
+    const numbers = list.map((item) => item.n);
+    const span = Math.max(...numbers) - Math.min(...numbers) + 1;
+    if (span <= list.length * 3) for (const item of list) ids.add(item.id);
+  }
+  return ids;
+}
+
+/** Streams worth showing first: linked to a player on the page, or an adaptive manifest. */
+export function isPrimaryCandidate(c: RankedCandidate): boolean {
+  return !c.isAd && (!!c.video || c.kind === 'hls' || c.kind === 'dash');
+}
+
 export function qualityLabel(height: number | undefined): string | undefined {
   if (!height || height <= 0) return undefined;
   if (height >= 2000) return '4K';
@@ -151,7 +188,12 @@ export function rankCandidates(state: TabMediaState, now = Date.now()): RankedCa
     for (const key of summary.childKeys) childKeys.add(key);
   }
 
-  const network = dedupeCandidates(Object.values(state.candidates).filter((c) => c.kind !== 'segment'));
+  const playedUrls = new Set(
+    videos.flatMap((v) => (v.src ? [v.src] : v.sources)).filter((u) => /^https?:/i.test(u)).map(dedupeKey),
+  );
+  const unsegmented = Object.values(state.candidates).filter((c) => c.kind !== 'segment');
+  const series = numberedSeries(unsegmented, playedUrls);
+  const network = dedupeCandidates(unsegmented.filter((c) => !series.has(c.id)));
   const items = new Map<string, RankedCandidate>();
   const aliases = new Map<string, string>();
 

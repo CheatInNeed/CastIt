@@ -18,6 +18,7 @@ import {
   type CommandResponse,
   type CompanionPairResult,
   type EngineMode,
+  type HighlightResult,
   type StreamKind,
   type SyncInfo,
   type SyncStartResponse,
@@ -48,7 +49,7 @@ import { routeStatus, type SyncTarget } from './lib/sync-routing.ts';
 import { classifyMedia, normalizeMime, totalSizeFromHeaders } from './lib/media-types.ts';
 import { dedupeKey } from './lib/media-types.ts';
 import { probeStream, summarizeManifest } from './lib/probe.ts';
-import { frameUrl, mediaSourceDetected, rankCandidates } from './lib/rank.ts';
+import { frameUrl, isPrimaryCandidate, mediaSourceDetected, rankCandidates } from './lib/rank.ts';
 import {
   emptyTabState,
   normalizeTabState,
@@ -129,7 +130,9 @@ function resetTab(tabId: number, pageUrl?: string): Promise<void> {
 }
 
 async function updateBadge(tabId: number, state: TabMediaState): Promise<void> {
-  const count = rankCandidates(state).length;
+  // Count real videos, not every stream file the page fetched.
+  const ranked = rankCandidates(state);
+  const count = ranked.filter(isPrimaryCandidate).length || ranked.length;
   try {
     await chrome.action.setBadgeBackgroundColor({ tabId, color: '#2563eb' });
     await chrome.action.setBadgeText({ tabId, text: count > 0 ? String(Math.min(count, 99)) : '' });
@@ -407,7 +410,7 @@ async function popupState(tabId: number): Promise<PopupState> {
   const [state, tab, session, comp, mode, transcode] = await Promise.all([
     readTab(tabId),
     chrome.tabs.get(tabId).catch(() => undefined),
-    chrome.storage.session.get([KEY.castStatus, KEY.castNotice, KEY.syncTarget]),
+    chrome.storage.session.get([KEY.castStatus, KEY.castNotice, KEY.syncTarget, KEY.castContext]),
     companion(),
     engineMode(),
     transcodeSettings(),
@@ -431,6 +434,12 @@ async function popupState(tabId: number): Promise<PopupState> {
     controllerConnected: controllerPort !== null,
     controllerUrl: CONTROLLER_URL,
     sync: syncInfo(session[KEY.syncTarget] as SyncTarget | undefined, (session[KEY.castStatus] as CastStatus | undefined) ?? null),
+    castingCandidateId: castingCandidate(
+      session[KEY.castContext] as CastContext | undefined,
+      session[KEY.castStatus] as CastStatus | undefined,
+      tabId,
+    ),
+    buildId: __BUILD_ID__,
   };
 }
 
@@ -692,6 +701,13 @@ async function onSyncLost(sender: chrome.runtime.MessageSender, requestId: strin
   await chrome.storage.session.set({ [KEY.syncTarget]: { ...target, state: 'unavailable', reason } satisfies SyncTarget });
 }
 
+/** The candidate of this tab that is on the TV right now. */
+function castingCandidate(context: CastContext | undefined, status: CastStatus | undefined, tabId: number): string | undefined {
+  if (!context || !status?.sessionActive || context.sync.tabId !== tabId) return undefined;
+  if (status.requestId !== context.activeRequestId || ['idle', 'error', 'ended'].includes(status.phase)) return undefined;
+  return context.direct.candidateId;
+}
+
 function syncInfo(target: SyncTarget | undefined, status: CastStatus | null): SyncInfo {
   if (!target || !status?.sessionActive) return { state: 'off' };
   return { state: target.state, frameHost: target.frameHost, reason: target.reason };
@@ -754,6 +770,14 @@ chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupReques
       return true;
     case 'popup/set-engine':
       void chrome.storage.local.set({ [KEY.engineMode]: message.mode }).then(() => sendResponse({ ok: true }));
+      return true;
+    case 'popup/highlight':
+      void chrome.tabs
+        .sendMessage(message.tabId, { type: 'content/highlight', videoKey: message.videoKey } satisfies BackgroundToContent, { frameId: message.frameId })
+        .then((r: { found?: boolean } | undefined): HighlightResult => (r?.found ? 'shown' : message.videoKey ? 'not-found' : 'shown'))
+        // No Castit script answering in that frame: typically a page opened before Castit was reloaded.
+        .catch((): HighlightResult => 'unreachable')
+        .then(sendResponse);
       return true;
     case 'popup/open-controller':
       void openController().then(() => sendResponse({ ok: true }));

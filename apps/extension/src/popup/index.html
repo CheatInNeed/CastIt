@@ -9,8 +9,16 @@
   <body>
     <header class="bar">
       <div class="brand">Castit</div>
-      <div id="connection" class="pill">…</div>
+      <div class="pills">
+        <span id="connection" class="pill" title="Chromecast / controller page">…</span>
+        <button id="companion-pill" class="pill" title="Local companion: click for details">Companion …</button>
+      </div>
     </header>
+
+    <div id="stale" class="notice warn" role="alert" hidden>
+      Castit was rebuilt, but Chrome is still running the old version in the background.
+      <button id="reload-ext" class="link">Reload Castit</button>
+    </div>
 
     <section id="now" class="card" hidden>
       <div class="row between">
@@ -40,8 +48,12 @@
     </section>
 
     <section class="card">
-      <div class="eyebrow">Detected media</div>
+      <div class="eyebrow">Videos on this page <span class="hint">· hover a row to see it on the page</span></div>
       <div id="candidates"></div>
+      <details id="others" hidden>
+        <summary id="others-summary" class="small muted"></summary>
+        <div id="others-list"></div>
+      </details>
       <p id="empty" class="muted" hidden></p>
       <button id="cast" class="cast" disabled>Cast</button>
     </section>
@@ -59,6 +71,7 @@
         <input id="pair-code" placeholder="123-456" inputmode="numeric" autocomplete="off" maxlength="7" aria-label="Pairing code" />
         <button id="pair-btn" type="submit" class="icon primary">Pair</button>
       </form>
+      <p id="pair-result" class="small" role="status" hidden></p>
       <label class="row small field">
         Casting method
         <select id="engine-mode">

@@ -3,6 +3,7 @@ import {
   type CompanionPairResult,
   type CompanionStatus,
   type EngineMode,
+  type HighlightResult,
   type TranscodeSettings,
   PHASE_LABELS,
   type CandidateView,
@@ -14,7 +15,7 @@ import {
   type PopupState,
   type RemoteCommand,
 } from '@castit/shared';
-import { selectMainCandidate } from '../lib/rank.ts';
+import { isPrimaryCandidate, selectMainCandidate } from '../lib/rank.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -40,13 +41,29 @@ async function refresh(): Promise<void> {
 }
 
 function render(): void {
-  if (!state) return;
-  renderConnection(state);
-  renderCandidates(state);
-  renderNow(state.castStatus);
-  renderSync(state);
-  renderCompanion(state.companion, state.engineMode, state.transcodeSettings);
-  renderNotice(state.notice);
+  const s = state;
+  if (!s) return;
+  // A background worker from an older build may omit newer fields: render what we can.
+  const parts = [
+    () => renderStale(s),
+    () => renderConnection(s),
+    () => renderCandidates(s),
+    () => renderNow(s.castStatus),
+    () => renderSync(s),
+    () => renderCompanion(s.companion, s.engineMode, s.transcodeSettings),
+    () => renderNotice(s.notice),
+  ];
+  for (const part of parts) {
+    try {
+      part();
+    } catch (e) {
+      console.warn('Castit popup:', e);
+    }
+  }
+}
+
+function renderStale(s: PopupState): void {
+  $('stale').hidden = s.buildId === __BUILD_ID__;
 }
 
 function renderSync(s: PopupState): void {
@@ -72,10 +89,26 @@ const COMPANION_LABEL: Record<CompanionStatus['state'], string> = {
   paired: 'Ready',
 };
 
+const COMPANION_PILL: Record<CompanionStatus['state'], string> = {
+  offline: 'Companion off',
+  unpaired: 'Companion: pair it',
+  rejected: 'Companion: pair again',
+  paired: 'Companion ✓',
+};
+
 function renderCompanion(status: CompanionStatus, mode: EngineMode, transcode: TranscodeSettings): void {
   const pill = $('companion-state');
   pill.textContent = COMPANION_LABEL[status.state];
-  pill.className = `pill small ${status.state === 'paired' ? 'on' : ''}`;
+  pill.className = `pill small ${status.state === 'paired' ? 'on' : status.state === 'offline' ? '' : 'warn'}`;
+  const header = $('companion-pill');
+  header.textContent = COMPANION_PILL[status.state];
+  header.className = `pill ${status.state === 'paired' ? 'on' : status.state === 'offline' ? '' : 'warn'}`;
+  header.title =
+    status.state === 'paired'
+      ? `Local companion running and paired (${status.mediaBaseUrl ?? ''})`
+      : status.state === 'offline'
+        ? 'Local companion not running (optional). Click for details.'
+        : 'Local companion running but not paired. Click to pair.';
   const hint = $('companion-hint');
   hint.textContent =
     status.state === 'offline'
@@ -125,14 +158,20 @@ const LEVEL_LABEL: Record<string, string> = {
 };
 
 function renderCandidates(s: PopupState): void {
-  const list = $('candidates');
-  list.replaceChildren();
-
   if (!userSelected || !s.candidates.some((c) => c.id === selectedId)) {
-    selectedId = selectMainCandidate(s.candidates)?.id;
+    selectedId = s.castingCandidateId ?? selectMainCandidate(s.candidates)?.id;
   }
 
-  for (const c of s.candidates) list.append(candidateRow(c));
+  // Real videos first; every other stream file the page fetched goes behind a fold.
+  const primary = s.candidates.filter(isPrimaryCandidate);
+  const main = primary.length ? primary : s.candidates;
+  const others = primary.length ? s.candidates.filter((c) => !isPrimaryCandidate(c)) : [];
+  $('candidates').replaceChildren(...main.map((c) => candidateRow(c, s)));
+  $('others-list').replaceChildren(...others.map((c) => candidateRow(c, s)));
+  const fold = $<HTMLDetailsElement>('others');
+  fold.hidden = others.length === 0;
+  $('others-summary').textContent = `Other stream files on this page (${others.length})`;
+  if (others.some((c) => c.id === selectedId)) fold.open = true;
 
   const empty = $('empty');
   empty.hidden = s.candidates.length > 0;
@@ -145,10 +184,51 @@ function renderCandidates(s: PopupState): void {
   castButton.disabled = !selected || selected.assessment.level === 'unsupported';
 }
 
-function candidateRow(c: CandidateView): HTMLElement {
+/** Where on the page this stream plays, in plain words. */
+function whereText(c: CandidateView): { text: string; playing: boolean } {
+  const v = c.video;
+  const place = c.embedded && c.frameHost ? ` · embedded player from ${c.frameHost}` : '';
+  if (!v) {
+    return {
+      text: c.kind === 'hls' || c.kind === 'dash' ? `Stream not linked to a player on the page${place}` : `Not linked to a player on the page${place}`,
+      playing: false,
+    };
+  }
+  const playing = !v.paused && !v.ended;
+  const state = playing ? '▶ Playing' : v.ended ? 'Ended' : v.currentTime > 0 ? 'Paused' : 'Not started';
+  const time = v.live ? 'LIVE' : v.duration ? `${formatTime(v.currentTime)} / ${formatTime(v.duration)}` : formatTime(v.currentTime);
+  const size = v.width > 0 ? `${v.width}×${v.height} player` : 'hidden player';
+  return { text: `${state} · ${time} · ${size}${v.visible ? '' : ' (off-screen)'}${place}`, playing };
+}
+
+const HOVER_PROBLEMS: Record<Exclude<HighlightResult, 'shown'>, string> = {
+  unreachable: 'Can’t point this out: reload the page (it was opened before Castit was last updated).',
+  'not-found': 'This player is no longer on the page.',
+};
+
+/** Outlines the row's video on the page; explains on the row when that isn't possible. */
+async function highlight(c: CandidateView | null, row?: HTMLElement): Promise<void> {
+  if (!c?.video) {
+    void send({ type: 'popup/highlight', tabId, frameId: lastHighlightFrame, videoKey: null }).catch(() => undefined);
+    return;
+  }
+  lastHighlightFrame = c.videoFrameId ?? c.frameId;
+  const result = await send<HighlightResult>({ type: 'popup/highlight', tabId, frameId: lastHighlightFrame, videoKey: c.video.key }).catch(
+    (): HighlightResult => 'unreachable',
+  );
+  const note = row?.querySelector<HTMLElement>('.hover-note');
+  if (!note) return;
+  note.hidden = result === 'shown';
+  note.textContent = result === 'shown' ? '' : HOVER_PROBLEMS[result];
+}
+let lastHighlightFrame = 0;
+
+function candidateRow(c: CandidateView, s: PopupState): HTMLElement {
   const row = document.createElement('label');
-  row.className = 'candidate';
+  row.className = `candidate${c.id === selectedId ? ' selected' : ''}`;
   row.title = c.url;
+  row.addEventListener('mouseenter', () => void highlight(c, row));
+  row.addEventListener('mouseleave', () => void highlight(null));
 
   const radio = document.createElement('input');
   radio.type = 'radio';
@@ -159,10 +239,22 @@ function candidateRow(c: CandidateView): HTMLElement {
     userSelected = true;
     if (state) renderCandidates(state);
   });
+  radio.addEventListener('focus', () => void highlight(c, row));
 
   const name = document.createElement('div');
   name.className = 'name';
   name.textContent = c.label;
+  if (c.id === s.castingCandidateId) {
+    const onTv = document.createElement('span');
+    onTv.className = 'tag on-tv';
+    onTv.textContent = 'ON TV';
+    name.prepend(onTv);
+  }
+
+  const where = whereText(c);
+  const whereLine = document.createElement('div');
+  whereLine.className = `where${where.playing ? ' playing' : ''}`;
+  whereLine.textContent = where.text;
 
   const meta = document.createElement('div');
   meta.className = 'meta';
@@ -177,7 +269,6 @@ function candidateRow(c: CandidateView): HTMLElement {
   if (c.manifest?.role === 'master' && c.manifest.variantCount > 1) tag(`${c.manifest.variantCount} qualities`);
   if (c.quality) tag(c.quality);
   if (c.live) tag('LIVE');
-  if (c.video && !c.video.paused) tag('PLAYING');
   const codec = videoCodecLabel(c.codecs);
   if (codec) tag(codec);
   if (c.isAd) tag('AD');
@@ -188,10 +279,14 @@ function candidateRow(c: CandidateView): HTMLElement {
   } catch {
     /* keep empty */
   }
-  meta.append(c.embedded && c.frameHost && c.frameHost !== host ? `${host} · in player ${c.frameHost}` : host);
+  meta.append(host);
 
-  row.append(radio, name, meta);
-  if (c.assessment.notes.length) {
+  const hoverNote = document.createElement('div');
+  hoverNote.className = 'hover-note';
+  hoverNote.hidden = true;
+  row.append(radio, name, whereLine, meta, hoverNote);
+  // Notes only for the selected row, to keep the list scannable.
+  if (c.id === selectedId && c.assessment.notes.length) {
     const notes = document.createElement('ul');
     notes.className = 'notes';
     for (const note of c.assessment.notes) {
@@ -298,6 +393,13 @@ function wire(): void {
   volume.addEventListener('change', () => void command({ type: 'volume', level: Number(volume.value) }));
 
   $('open-controller').addEventListener('click', () => void send({ type: 'popup/open-controller' }));
+  $('reload-ext').addEventListener('click', () => chrome.runtime.reload());
+  $('companion-pill').addEventListener('click', () => {
+    const details = $<HTMLDetailsElement>('companion');
+    details.open = true;
+    details.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+  window.addEventListener('blur', () => void highlight(null));
 
   $('pair-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -306,12 +408,16 @@ function wire(): void {
     button.disabled = true;
     const result = await send<CompanionPairResult>({ type: 'popup/companion-pair', code: input.value });
     button.disabled = false;
+    const line = $('pair-result');
+    line.hidden = false;
     if (result.ok) {
       input.value = '';
-      showError(null);
+      line.className = 'small ok';
+      line.textContent = 'Paired ✓ The companion will be used when a stream needs it.';
       await refresh();
     } else {
-      showError({ code: 'COMPANION_UNAVAILABLE', message: result.error });
+      line.className = 'small bad';
+      line.textContent = result.error;
     }
   });
   $('companion-forget').addEventListener('click', async () => {

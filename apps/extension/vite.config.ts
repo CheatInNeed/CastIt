@@ -22,7 +22,11 @@ function manifest(): Plugin {
 
 export default defineConfig({
   root: `${here}src`,
-  define: { __CONTROLLER_URL__: JSON.stringify(controllerUrl) },
+  define: {
+    __CONTROLLER_URL__: JSON.stringify(controllerUrl),
+    // Lets the popup notice a background worker still running code from an older build.
+    __BUILD_ID__: JSON.stringify(String(Date.now())),
+  },
   plugins: [manifest()],
   build: {
     outDir: `${here}dist`,

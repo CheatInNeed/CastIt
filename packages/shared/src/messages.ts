@@ -61,6 +61,7 @@ export type BackgroundToContent =
   | { type: 'content/refresh' }
   /** Pause local playback because the receiver took over. */
   | { type: 'content/pause-local' }
+  | { type: 'content/highlight'; videoKey: string | null }
   /** The TV is playing: turn the given (or main) <video> into a remote control. */
   | { type: 'content/sync-start'; requestId: string; videoKey?: string; deviceName?: string }
   | { type: 'content/sync-state'; requestId: string; state: SyncReceiverState }
@@ -102,6 +103,10 @@ export interface PopupState {
   /** Background progress/failure note, e.g. an automatic companion fallback. */
   notice: string | null;
   sync: SyncInfo;
+  /** Candidate currently playing on the TV from this tab, if any. */
+  castingCandidateId?: string;
+  /** Build id of the running background worker (compared with the popup's own). */
+  buildId: string;
 }
 
 export type PopupRequest =
@@ -112,7 +117,11 @@ export type PopupRequest =
   | { type: 'popup/companion-pair'; code: string }
   | { type: 'popup/companion-forget' }
   | { type: 'popup/set-engine'; mode: EngineMode }
-  | { type: 'popup/set-transcode'; settings: TranscodeSettings };
+  | { type: 'popup/set-transcode'; settings: TranscodeSettings }
+  /** Outline a page video while the user hovers its row (videoKey null = clear). */
+  | { type: 'popup/highlight'; tabId: number; frameId: number; videoKey: string | null };
+
+export type HighlightResult = 'shown' | 'not-found' | 'unreachable';
 
 export type CompanionPairResult = { ok: true; status: CompanionStatus } | { ok: false; error: string };
 

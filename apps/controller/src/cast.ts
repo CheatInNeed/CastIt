@@ -1,6 +1,6 @@
 // Cast session management, media loading and playback verification (Default Media Receiver).
 import type { CastError, CastPhase, CastRequest, CastStatus, RemoteCommand } from '@castit/shared';
-import { loadError, midPlaybackError, PLAYBACK_TIMEOUT, sessionError } from './errors.ts';
+import { decodeEntities, loadError, midPlaybackError, PLAYBACK_TIMEOUT, sessionError } from './errors.ts';
 import { Remote } from './remote.ts';
 
 const VERIFY_TIMEOUT_MS = 30_000;
@@ -247,7 +247,7 @@ export class CastController {
       phase: this.override ?? derived,
       sessionActive: !!session,
       devicesAvailable: this.context.getCastState() !== cast.framework.CastState.NO_DEVICES_AVAILABLE,
-      deviceName: session?.getCastDevice().friendlyName,
+      deviceName: decodeEntities(session?.getCastDevice().friendlyName),
       title: metadata?.title ?? req?.title,
       contentUrl: player.mediaInfo?.contentId ?? req?.url,
       currentTime: player.currentTime || 0,

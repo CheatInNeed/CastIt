@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { assessCastability } from '../../apps/extension/src/lib/castability.ts';
 import { parseHls } from '../../apps/extension/src/lib/manifests.ts';
 import { summarizeManifest } from '../../apps/extension/src/lib/probe.ts';
-import { codecsFromMime, frameDistance, rankCandidates } from '../../apps/extension/src/lib/rank.ts';
+import { codecsFromMime, frameDistance, isPrimaryCandidate, rankCandidates } from '../../apps/extension/src/lib/rank.ts';
 import {
   networkCandidateId,
   recordManifest,
@@ -172,5 +172,38 @@ describe('codecsFromMime', () => {
     expect(codecsFromMime('video/mp4; codecs="avc1.64001f, mp4a.40.2"')).toEqual(['avc1.64001f', 'mp4a.40.2']);
     expect(codecsFromMime('video/webm; codecs=vp9')).toEqual(['vp9']);
     expect(codecsFromMime('video/mp4')).toEqual([]);
+  });
+});
+
+describe('numbered stream pieces', () => {
+  const dash = (n: number) => `https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_3840x2160_12000k/bbb_30fps_3840x2160_12000k_${n}.m4v`;
+
+  it('hides DASH pieces like bbb_30fps_3840x2160_12000k_15.m4v (seen on the test page)', () => {
+    const state = stateWith([
+      { url: 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd', at: NOW - 20_000 },
+      ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].map((n) => ({ url: dash(n), contentType: 'video/mp4', totalSize: 5_000_000, at: NOW - 19_000 + n })),
+      { url: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4', totalSize: 14_000_000 },
+    ]);
+    expect(rankCandidates(state, NOW).map((c) => c.label)).toEqual(['bbb_30fps.mpd', 'trailer_hd.mp4']);
+  });
+
+  it('keeps real separate videos: too few, far apart, or played by the page', () => {
+    const ep = (n: number) => `https://cdn.e.com/show/episode${n}.mp4`;
+    expect(rankCandidates(stateWith([{ url: ep(1), totalSize: 9e8 }, { url: ep(2), totalSize: 9e8 }]), NOW)).toHaveLength(2);
+    expect(rankCandidates(stateWith([1, 40, 90].map((n) => ({ url: ep(n), totalSize: 9e8 }))), NOW)).toHaveLength(3);
+    const played = stateWith(
+      [1, 2, 3].map((n) => ({ url: ep(n), totalSize: 9e8 })),
+      [{ frameId: 0, videos: [video({ src: ep(2), paused: false })] }],
+    );
+    expect(rankCandidates(played, NOW)).toHaveLength(3);
+  });
+
+  it('separates real videos from other stream files', () => {
+    const state = stateWith(
+      [{ url: 'https://cdn.e.com/master.m3u8' }, { url: 'https://cdn.e.com/preview.mp4', totalSize: 5e6 }],
+      [{ frameId: 0, videos: [video({ src: 'https://cdn.e.com/movie.mp4' })] }],
+    );
+    const primary = rankCandidates(state, NOW).filter(isPrimaryCandidate).map((c) => c.label).sort();
+    expect(primary).toEqual(['master.m3u8', 'movie.mp4']);
   });
 });
