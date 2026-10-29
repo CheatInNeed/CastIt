@@ -32,6 +32,7 @@
         <div class="eyebrow">Media</div>
         <div id="media-title" class="title">Nothing queued</div>
         <div id="media-meta" class="muted small"></div>
+        <div id="media-plan" class="muted small" hidden></div>
         <button id="choose-device" class="primary big">Choose Cast device</button>
         <p id="hint" class="muted small" hidden></p>
       </section>
@@ -55,6 +56,10 @@
           <button id="stop" title="Stop media">Stop</button>
           <button id="disconnect" title="End the Cast session">Disconnect</button>
         </div>
+        <label id="subs-row" class="subs" hidden>
+          Subtitles
+          <select id="subs"></select>
+        </label>
       </section>
 
       <div id="error" class="error" role="alert" hidden></div>

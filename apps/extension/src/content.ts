@@ -2,8 +2,15 @@
 // background. It only sees its own frame's DOM; cross-origin iframes get their own instance,
 // which is how embedded third-party players are covered without breaking browser isolation.
 // Hints about MediaSource / EME / shadow roots come from the MAIN-world script (main-world.ts).
-import type { BackgroundToContent, ContentReportMessage } from '@castit/shared';
-import { describeVideo, findVideos, isReportable, markPlayed, pauseAll } from './lib/detection.ts';
+import type {
+  BackgroundToContent,
+  ContentRemoteMessage,
+  ContentReportMessage,
+  ContentSyncLostMessage,
+  SyncStartResponse,
+} from '@castit/shared';
+import { describeVideo, findVideos, isReportable, markPlayed, pauseAll, videoKey } from './lib/detection.ts';
+import { SyncSession } from './lib/sync-session.ts';
 import { MAIN_EVENT, type MainWorldHint } from './main-world.ts';
 
 declare global {
@@ -132,10 +139,67 @@ function init(): void {
 
   watchRoot(document);
 
-  chrome.runtime.onMessage.addListener((message: BackgroundToContent) => {
-    if (message.type === 'content/refresh') report();
-    else if (message.type === 'content/pause-local') {
-      if (pauseAll(findVideos(document, true).map((f) => f.video)) > 0) schedule(100);
+  // ------------------------------------------------------------ page player as remote control
+
+  let sync: SyncSession | null = null;
+
+  /** The video to sync: the one the cast came from, else the one the user was watching. */
+  const pickVideo = (key: string | undefined): HTMLVideoElement | undefined => {
+    const videos = findVideos(document, true).map((f) => f.video);
+    if (key) {
+      const match = videos.find((v) => videoKey(v) === key);
+      if (match) return match;
+    }
+    const described = videos.filter(isReportable).map((v) => ({ v, d: describeVideo(v) }));
+    described.sort(
+      (a, b) =>
+        Number(!b.d.paused) - Number(!a.d.paused) ||
+        (b.d.lastPlayedAt ?? 0) - (a.d.lastPlayedAt ?? 0) ||
+        b.d.width * b.d.height - a.d.width * a.d.height,
+    );
+    return described[0]?.v;
+  };
+
+  chrome.runtime.onMessage.addListener((message: BackgroundToContent, _sender, sendResponse) => {
+    switch (message.type) {
+      case 'content/refresh':
+        report();
+        break;
+      case 'content/pause-local':
+        if (pauseAll(findVideos(document, true).map((f) => f.video)) > 0) schedule(100);
+        break;
+      case 'content/sync-start': {
+        const video = pickVideo(message.videoKey);
+        // Frames without a player stay silent so the frame that has one answers.
+        if (!video) {
+          if (window === window.top && message.videoKey === undefined) {
+            sendResponse({ ok: false, reason: 'No video element was found on the page.' } satisfies SyncStartResponse);
+          }
+          break;
+        }
+        sync?.stop('replaced', null, false);
+        const requestId = message.requestId;
+        sync = new SyncSession(video, {
+          requestId,
+          deviceName: message.deviceName,
+          send: (command) =>
+            chrome.runtime.sendMessage({ type: 'content/remote', requestId, command } satisfies ContentRemoteMessage).catch(() => undefined),
+          onLost: (reason) =>
+            chrome.runtime.sendMessage({ type: 'content/sync-lost', requestId, reason } satisfies ContentSyncLostMessage).catch(() => undefined),
+        });
+        sendResponse({ ok: true, videoKey: videoKey(video) } satisfies SyncStartResponse);
+        break;
+      }
+      case 'content/sync-state':
+        if (sync?.requestId === message.requestId) sync.receiverState(message.state);
+        break;
+      case 'content/sync-stop':
+        if (sync?.requestId === message.requestId) {
+          sync.stop(message.reason, message.lastTime, message.wasPlaying);
+          sync = null;
+          schedule(100);
+        }
+        break;
     }
     return false;
   });

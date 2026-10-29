@@ -42,6 +42,8 @@ export function originOf(url: URL | string): string {
 export class SessionStore {
   private readonly sessions = new Map<string, MediaSession>();
   private readonly options: SessionStoreOptions;
+  /** Called whenever a session ends (deleted, expired or evicted), e.g. to stop its FFmpeg job. */
+  onDelete?: (id: string) => void;
 
   constructor(options: Partial<SessionStoreOptions> = {}) {
     this.options = { ...DEFAULT_SESSION_OPTIONS, ...options };
@@ -92,7 +94,9 @@ export class SessionStore {
     if (!session) return false;
     for (const abort of session.active) abort();
     session.active.clear();
-    return this.sessions.delete(id);
+    this.sessions.delete(id);
+    this.onDelete?.(id);
+    return true;
   }
 
   sweep(now = Date.now()): void {

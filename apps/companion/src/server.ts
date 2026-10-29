@@ -13,7 +13,9 @@ import {
   type UpstreamContext,
 } from '@castit/shared';
 import { PairingStore, type CompanionSettings } from './config.ts';
+import { detectFfmpeg, probeMedia, type FfmpegCapabilities } from './ffmpeg.ts';
 import { toProxyUrl } from './manifest.ts';
+import { planMedia, summarizePlan } from './plan.ts';
 import {
   controlRequestAllowed,
   PairingManager,
@@ -24,15 +26,18 @@ import {
 } from './security.ts';
 import { SessionStore, type SessionStoreOptions } from './sessions.ts';
 import { handleMediaRequest } from './streaming.ts';
+import { JobManager, sweepStaleJobDirs } from './transcoder.ts';
 import { requestUpstream, upstreamHeaders } from './upstream.ts';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 const MAX_BODY_BYTES = 64 * 1024;
 
 export interface CompanionOptions extends CompanionSettings {
   sessionOptions?: Partial<SessionStoreOptions>;
   log?: (message: string) => void;
   isLocalClient?: (address: string) => boolean;
+  /** Where FFmpeg job directories are created (default: OS temp dir). */
+  tmpRoot?: string;
 }
 
 export interface RunningCompanion {
@@ -41,6 +46,10 @@ export interface RunningCompanion {
   pairing: PairingManager;
   store: PairingStore;
   sessions: SessionStore;
+  jobs: JobManager;
+  ffmpeg: FfmpegCapabilities;
+  /** Synchronous last-resort cleanup for process exit: kills FFmpeg, deletes job directories. */
+  closeSync(): void;
   close(): Promise<void>;
 }
 
@@ -113,9 +122,14 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
   const store = new PairingStore(options.configDir);
   const pairing = new PairingManager();
   const sessions = new SessionStore(options.sessionOptions);
+  const jobs = new JobManager();
+  sessions.onDelete = (id) => void jobs.close(id);
+  const swept = sweepStaleJobDirs(options.tmpRoot);
+  if (swept) log(`removed ${swept} stale transcode folder(s)`);
+  const ffmpeg = await detectFfmpeg({ ffmpeg: options.ffmpegPath, ffprobe: options.ffprobePath });
 
   const media = http.createServer((req, res) => {
-    const ctx = { sessions, mediaBase: mediaBaseUrl, allowPrivate: options.allowPrivateUpstreams, log, isLocalClient: options.isLocalClient };
+    const ctx = { sessions, mediaBase: mediaBaseUrl, allowPrivate: options.allowPrivateUpstreams, log, isLocalClient: options.isLocalClient, jobs };
     handleMediaRequest(req, res, ctx).catch((e) => {
       log(`media handler failed: ${(e as Error).message}`);
       if (!res.headersSent) res.writeHead(500).end();
@@ -151,7 +165,9 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
         protocol: COMPANION_PROTOCOL,
         paired: store.paired,
         mediaBaseUrl,
-        ffmpeg: false,
+        ffmpeg: ffmpeg.available,
+        ffmpegVersion: ffmpeg.version,
+        hwEncoder: ffmpeg.available && ffmpeg.encoder.hardware ? ffmpeg.encoder.name : null,
       };
       return json(res, 200, body);
     }
@@ -189,7 +205,9 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
         mediaUrl: toProxyUrl(mediaBaseUrl, session.id, upstream),
         expiresAt: sessions.idleExpiry(session),
         check,
+        delivery: 'relay',
       };
+      if (body.transcode && check.ok) await prepareConversion(session.id, upstream, kind, body.transcode, response);
       return json(res, 200, response);
     }
 
@@ -207,6 +225,62 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
     }
 
     throw new HttpError(404, 'NOT_FOUND', 'Unknown endpoint.');
+  }
+
+  /**
+   * Analyses the stream with ffprobe (reading it through this session's own relay, so the same
+   * SSRF guard and Referer apply) and starts an FFmpeg job when the receiver can't play it as is.
+   */
+  async function prepareConversion(
+    sessionId: string,
+    upstream: URL,
+    kind: string,
+    request: NonNullable<CreateSessionRequest['transcode']>,
+    response: CreateSessionResponse,
+  ): Promise<void> {
+    if (!ffmpeg.available) {
+      response.analysisError = ffmpeg.error ?? 'FFmpeg is not available.';
+      return;
+    }
+    if (kind === 'dash' && !ffmpeg.demuxers.dash) {
+      response.analysisError = 'This FFmpeg build cannot read DASH streams.';
+      return;
+    }
+    const wanted = {
+      mode: request.mode === 'force' ? 'force' : 'auto',
+      profile: ['compat', 'ultra', 'google-tv', 'gtv-streamer'].includes(request.profile) ? request.profile : 'compat',
+      quality: ['auto', '1080p', '720p', '480p'].includes(request.quality) ? request.quality : 'auto',
+    } as const;
+    const input = toProxyUrl(`http://127.0.0.1:${mediaPort}`, sessionId, upstream);
+    let probe;
+    try {
+      probe = await probeMedia({ ffmpeg: options.ffmpegPath, ffprobe: options.ffprobePath }, input);
+    } catch (e) {
+      response.analysisError = (e as Error).message;
+      log(`analysis failed: ${response.analysisError}`);
+      return;
+    }
+    const extension = /\.([a-z0-9]{2,5})$/i.exec(upstream.pathname)?.[1]?.toLowerCase();
+    const plan = planMedia(probe, { kind: kind as 'hls' | 'dash' | 'progressive' | 'unknown', extension }, wanted);
+    response.plan = summarizePlan(plan, ffmpeg.encoder);
+    if (plan.action === 'direct') return; // playable as is: keep the plain relay
+
+    const live = (kind === 'hls' || kind === 'dash') && !probe.duration;
+    const job = jobs.create(sessionId, {
+      input,
+      plan,
+      encoder: ffmpeg.encoder,
+      ffmpegPath: options.ffmpegPath,
+      duration: probe.duration,
+      live,
+      log,
+      tmpRoot: options.tmpRoot,
+    });
+    const base = `${mediaBaseUrl}/t/${sessionId}`;
+    response.delivery = plan.action;
+    response.mediaUrl = `${base}/index.m3u8`;
+    response.media = job.delivered(base);
+    log(`${plan.action} ${sessionId.slice(0, 6)}…: ${plan.details.join('; ')}`);
   }
 
   const listen = (server: Server, port: number, host: string) =>
@@ -227,9 +301,15 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
     pairing,
     store,
     sessions,
+    jobs,
+    ffmpeg,
+    closeSync() {
+      jobs.closeAllNow();
+    },
     async close() {
       clearInterval(sweeper);
       sessions.closeAll();
+      await jobs.closeAll();
       control.closeAllConnections();
       media.closeAllConnections();
       await Promise.all([new Promise((r) => control.close(r)), new Promise((r) => media.close(r))]);

@@ -1,4 +1,5 @@
-// Domain types shared by the extension, the controller page and (later) the companion.
+// Domain types shared by the extension, the controller page and the companion.
+import type { MediaPlanSummary, TextTrackInfo } from './companion.ts';
 
 export type StreamKind =
   | 'hls' // HLS playlist (.m3u8)
@@ -161,6 +162,8 @@ export interface RankedCandidate {
   totalSize?: number;
   /** The video element playing (or associated with) this stream, if any. */
   video?: VideoElementInfo;
+  /** Frame of `video` (may differ from frameId when a manifest feeds a player in another frame). */
+  videoFrameId?: number;
   /** Requested from (or shown in) a sub-frame, e.g. an embedded third-party player. */
   embedded: boolean;
   /** Host of the frame the stream belongs to. */
@@ -187,6 +190,8 @@ export interface CastabilityAssessment {
   blocker?: CastError;
   /** Why relaying through the local companion would help (no CORS, Referer checks, …). */
   companionHelps?: string;
+  /** Why converting with the companion's FFmpeg would help (container/codec the receiver can't play). */
+  transcodeHelps?: string;
 }
 
 export type CastErrorCode =
@@ -234,6 +239,10 @@ export interface CastRequest {
   startTime?: number;
   duration?: number;
   engine: CastEngine;
+  /** Sidecar WebVTT subtitles (from the companion). */
+  textTracks?: TextTrackInfo[];
+  /** What the companion's FFmpeg does to this stream, when it converts it. */
+  plan?: MediaPlanSummary;
 }
 
 export type CastPhase =
@@ -266,6 +275,11 @@ export interface CastStatus {
   requestId?: string;
   sourceTabId?: number;
   engine?: CastEngine;
+  /** Subtitle tracks offered to the receiver, and the one shown (null = off). */
+  textTracks?: Array<{ id: number; name: string; language?: string }>;
+  activeTextTrack?: number | null;
+  /** Conversion summary when the companion transcodes/remuxes. */
+  plan?: MediaPlanSummary;
   error?: CastError;
   updatedAt: number;
 }
@@ -279,4 +293,6 @@ export type RemoteCommand =
   | { type: 'volume'; level: number }
   | { type: 'mute'; muted: boolean }
   | { type: 'stop' }
-  | { type: 'disconnect' };
+  | { type: 'disconnect' }
+  | { type: 'rate'; rate: number }
+  | { type: 'subtitles'; trackId: number | null };

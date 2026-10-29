@@ -1,5 +1,9 @@
-// Pure engine selection (Direct vs Local Companion) and Direct → Companion fallback rules.
-// Phase 6 grows this into the full decision engine; Phase 3 covers the two delivery engines.
+// Pure engine selection and the fallback ladder, cheapest first:
+//   direct     the Chromecast fetches the stream itself
+//   companion  the local companion relays the bytes unchanged (fixes CORS / Referer checks)
+//   transcode  the companion analyses the stream with FFmpeg and remuxes/re-encodes only what the
+//              receiver can't play (an analysis that finds nothing to fix falls back to a relay)
+// Phase 6 grows this into the full decision engine.
 import type {
   CastabilityAssessment,
   CastEngine,
@@ -11,46 +15,115 @@ import type {
 } from '@castit/shared';
 import { safeUrl } from './media-types.ts';
 
-/** Receiver errors that relaying through the companion can plausibly fix. */
+export interface CompanionAvailability {
+  /** Running and paired. */
+  ready: boolean;
+  /** FFmpeg available in the companion. */
+  ffmpeg: boolean;
+}
+
+/** Receiver errors a different delivery engine can plausibly fix. */
 const FALLBACK_CODES: CastErrorCode[] = ['RECEIVER_LOAD_FAILED', 'PLAYBACK_TIMEOUT', 'SEGMENT_FAILURE'];
 
-/** How the popup should present a candidate once the companion's availability is known. */
-export function withCompanion(a: CastabilityAssessment, companionReady: boolean, mode: EngineMode): CastabilityAssessment {
-  if (a.blocker || mode === 'direct') return a;
-  if (mode === 'companion' && companionReady) {
+const canTranscode = (c: CompanionAvailability) => c.ready && c.ffmpeg;
+
+/** How the popup should present a candidate once the companion's abilities are known. */
+export function withCompanion(a: CastabilityAssessment, comp: CompanionAvailability, mode: EngineMode): CastabilityAssessment {
+  if (mode === 'direct') return a;
+
+  // Containers/codecs the receiver can't play: FFmpeg can lift a container blocker.
+  if (a.blocker) {
+    if (a.blocker.code !== 'UNSUPPORTED_CONTAINER' || !a.transcodeHelps) return a;
+    if (!canTranscode(comp)) {
+      return { ...a, notes: [...a.notes, 'Start the local companion with FFmpeg installed to convert this stream.'] };
+    }
+    return {
+      level: 'likely',
+      engine: 'transcode',
+      notes: [...a.notes.filter((n) => n !== a.blocker!.message), `Will convert with FFmpeg on your computer (${a.transcodeHelps}).`],
+      companionHelps: a.companionHelps,
+      transcodeHelps: a.transcodeHelps,
+    };
+  }
+
+  if (mode === 'transcode' && canTranscode(comp)) {
+    return { ...a, engine: 'transcode', notes: [...a.notes, 'Will convert with FFmpeg on your computer.'] };
+  }
+  if (mode === 'companion' && comp.ready) {
     return { ...a, engine: 'companion', notes: [...a.notes, 'Will relay through the local companion.'] };
   }
-  if (!a.companionHelps) return a;
-  if (!companionReady) {
-    return { ...a, notes: [...a.notes, 'The local companion could relay this stream; it is not running or not paired.'] };
+  if (a.transcodeHelps && canTranscode(comp)) {
+    return {
+      ...a,
+      level: a.level === 'unlikely' ? 'possible' : 'likely',
+      engine: 'transcode',
+      notes: [...a.notes, `The companion will check the stream and convert it if needed (${a.transcodeHelps}).`],
+    };
   }
-  return {
-    ...a,
-    level: a.level === 'unlikely' ? 'possible' : 'likely',
-    engine: 'companion',
-    notes: [...a.notes, `Will relay through the local companion (${a.companionHelps}).`],
-  };
+  if (a.companionHelps && comp.ready) {
+    return {
+      ...a,
+      level: a.level === 'unlikely' ? 'possible' : 'likely',
+      engine: 'companion',
+      notes: [...a.notes, `Will relay through the local companion (${a.companionHelps}).`],
+    };
+  }
+  if ((a.companionHelps || a.transcodeHelps) && !comp.ready) {
+    return { ...a, notes: [...a.notes, 'The local companion could help with this stream; it is not running or not paired.'] };
+  }
+  return a;
 }
 
 export type EngineChoice = { engine: CastEngine } | { error: CastError };
 
-export function chooseEngine(mode: EngineMode, a: CastabilityAssessment, companionReady: boolean): EngineChoice {
-  if (mode === 'direct') return { engine: 'direct' };
-  if (mode === 'companion') {
-    return companionReady
-      ? { engine: 'companion' }
-      : { error: { code: 'COMPANION_UNAVAILABLE', message: 'The local companion is not running or not paired. Start it with `npm run companion` and pair it in the popup.' } };
+const companionMissing: CastError = {
+  code: 'COMPANION_UNAVAILABLE',
+  message: 'The local companion is not running or not paired. Start it with `npm run companion` and pair it in the popup.',
+};
+const ffmpegMissing: CastError = {
+  code: 'TRANSCODE_FAILED',
+  message: 'The local companion has no FFmpeg, so it cannot convert streams. Install FFmpeg and restart the companion.',
+};
+
+/** First engine to try. Blockers other than an FFmpeg-fixable container are handled by the caller. */
+export function chooseEngine(mode: EngineMode, a: CastabilityAssessment, comp: CompanionAvailability): EngineChoice {
+  const containerBlocked = a.blocker?.code === 'UNSUPPORTED_CONTAINER';
+  if (mode === 'direct') return containerBlocked ? { error: a.blocker! } : { engine: 'direct' };
+  if (mode === 'transcode') {
+    if (!comp.ready) return { error: companionMissing };
+    return comp.ffmpeg ? { engine: 'transcode' } : { error: ffmpegMissing };
   }
-  return { engine: companionReady && a.companionHelps ? 'companion' : 'direct' };
+  if (containerBlocked) {
+    if (!comp.ready) return { error: { ...a.blocker!, message: `${a.blocker!.message} ${companionMissing.message}` } };
+    return comp.ffmpeg ? { engine: 'transcode' } : { error: ffmpegMissing };
+  }
+  if (mode === 'companion') {
+    if (!comp.ready) return { error: companionMissing };
+    return { engine: a.transcodeHelps && comp.ffmpeg ? 'transcode' : 'companion' };
+  }
+  // auto
+  if (canTranscode(comp) && a.transcodeHelps) return { engine: 'transcode' };
+  if (comp.ready && a.companionHelps) return { engine: 'companion' };
+  return { engine: 'direct' };
 }
 
-export function shouldFallBack(
+/**
+ * Next engine after a receiver-side failure in automatic mode, or null to give up.
+ * After Direct fails, the companion analyses first (FFmpeg tells codec problems apart from
+ * access problems); after a plain relay fails, conversion is forced.
+ */
+export function nextEngine(
   mode: EngineMode,
   tried: CastEngine[],
   error: CastError,
-  companionReady: boolean,
-): boolean {
-  return mode === 'auto' && companionReady && !tried.includes('companion') && FALLBACK_CODES.includes(error.code);
+  comp: CompanionAvailability,
+): { engine: 'companion' | 'transcode'; force: boolean } | null {
+  if (mode !== 'auto' || !comp.ready || !FALLBACK_CODES.includes(error.code)) return null;
+  if (!tried.includes('companion') && !tried.includes('transcode')) {
+    return comp.ffmpeg ? { engine: 'transcode', force: false } : { engine: 'companion', force: false };
+  }
+  if (tried.includes('companion') && !tried.includes('transcode') && comp.ffmpeg) return { engine: 'transcode', force: true };
+  return null;
 }
 
 /**

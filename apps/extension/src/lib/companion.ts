@@ -64,7 +64,7 @@ export async function companionStatus(config: CompanionConfig): Promise<Companio
   } catch (e) {
     return { state: 'offline', url: config.url, error: (e as Error).message };
   }
-  const base = { url: config.url, version: health.version, mediaBaseUrl: health.mediaBaseUrl };
+  const base = { url: config.url, version: health.version, mediaBaseUrl: health.mediaBaseUrl, ffmpeg: health.ffmpeg, hwEncoder: health.hwEncoder };
   if (health.name !== 'castit-companion' || health.protocol !== COMPANION_PROTOCOL) {
     return { ...base, state: 'offline', error: 'Incompatible companion version.' };
   }
@@ -89,7 +89,8 @@ export async function pairCompanion(config: CompanionConfig, code: string): Prom
 }
 
 export function createCompanionSession(config: CompanionConfig, request: CreateSessionRequest): Promise<CreateSessionResponse> {
-  return call<CreateSessionResponse>(config, '/api/sessions', { method: 'POST', body: JSON.stringify(request) });
+  // FFmpeg analysis (when requested) can take a while on slow upstreams.
+  return call<CreateSessionResponse>(config, '/api/sessions', { method: 'POST', body: JSON.stringify(request) }, request.transcode ? 45_000 : 15_000);
 }
 
 export async function deleteCompanionSession(config: CompanionConfig, sessionId: string): Promise<void> {

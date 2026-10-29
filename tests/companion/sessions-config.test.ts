@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -80,5 +80,6 @@ describe('PairingStore', () => {
     expect(reloaded.verify('wrong')).toBe(false);
     reloaded.revokeAll();
     expect(new PairingStore(dir).paired).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

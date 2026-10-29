@@ -45,6 +45,7 @@ function evidenceFor(c: RankedCandidate, probe?: ProbeResult): Evidence | undefi
 export function assessCastability(c: RankedCandidate, probe?: ProbeResult): CastabilityAssessment {
   let level: Castability = 'likely';
   let companionHelps: string | undefined;
+  let transcodeHelps: string | undefined;
   const notes: string[] = [];
   const lower = (to: Castability, note?: string) => {
     if (ORDER.indexOf(to) > ORDER.indexOf(level)) level = to;
@@ -55,6 +56,7 @@ export function assessCastability(c: RankedCandidate, probe?: ProbeResult): Cast
     engine: null,
     notes: [...notes, error.message],
     blocker: error,
+    transcodeHelps,
   });
 
   if (c.isAd) notes.push('This looks like an advertisement.');
@@ -63,13 +65,15 @@ export function assessCastability(c: RankedCandidate, probe?: ProbeResult): Cast
   switch (c.container) {
     case 'flv':
     case 'avi':
+      transcodeHelps = `${c.container.toUpperCase()} files must be converted`;
       return blocked({
         code: 'UNSUPPORTED_CONTAINER',
-        message: `Chromecast cannot play ${c.container.toUpperCase()} files. Transcoding (local companion) is not available yet.`,
+        message: `Chromecast cannot play ${c.container.toUpperCase()} files directly; the local companion can convert them with FFmpeg.`,
       });
     case 'mkv':
     case 'ogg':
     case 'mov':
+      transcodeHelps = `${c.container.toUpperCase()} may need converting`;
       lower('possible', `Chromecast support for ${c.container.toUpperCase()} depends on the codecs inside.`);
       break;
   }
@@ -134,10 +138,16 @@ export function assessCastability(c: RankedCandidate, probe?: ProbeResult): Cast
   }
 
   const codecs = c.codecs.concat(ev?.manifest?.codecs ?? []).join(',');
-  if (/\b(hvc1|hev1)/i.test(codecs)) lower('possible', 'HEVC video needs a Chromecast with Google TV / Ultra.');
-  if (/\bav01/i.test(codecs)) lower('possible', 'AV1 video needs a recent Chromecast / Google TV device.');
+  if (/\b(hvc1|hev1)/i.test(codecs)) {
+    transcodeHelps ??= 'HEVC video may need converting for this Chromecast';
+    lower('possible', 'HEVC video needs a Chromecast with Google TV / Ultra.');
+  }
+  if (/\bav01/i.test(codecs)) {
+    transcodeHelps ??= 'AV1 video may need converting for this Chromecast';
+    lower('possible', 'AV1 video needs a recent Chromecast / Google TV device.');
+  }
   if (/\bvp09|\bvp9\b/i.test(codecs) && c.kind !== 'progressive') notes.push('VP9 plays on most, but not the oldest, Chromecasts.');
   if (/\b(ac-3|ec-3)\b/i.test(codecs)) notes.push('Dolby audio plays only when the TV/receiver supports it.');
 
-  return { level, engine: 'direct', notes, companionHelps };
+  return { level, engine: 'direct', notes, companionHelps, transcodeHelps };
 }

@@ -19,6 +19,9 @@ import {
   type CompanionPairResult,
   type EngineMode,
   type StreamKind,
+  type SyncInfo,
+  type SyncStartResponse,
+  type TranscodeSettings,
   type UpstreamContext,
   type ContentToBackground,
   type ControllerToBackground,
@@ -40,7 +43,8 @@ import {
   saveCompanionConfig,
   type CompanionConfig,
 } from './lib/companion.ts';
-import { chooseEngine, shouldFallBack, upstreamContextFor, withCompanion } from './lib/engine.ts';
+import { chooseEngine, nextEngine, upstreamContextFor, withCompanion } from './lib/engine.ts';
+import { routeStatus, type SyncTarget } from './lib/sync-routing.ts';
 import { classifyMedia, normalizeMime, totalSizeFromHeaders } from './lib/media-types.ts';
 import { dedupeKey } from './lib/media-types.ts';
 import { probeStream, summarizeManifest } from './lib/probe.ts';
@@ -68,7 +72,11 @@ const KEY = {
   castNotice: 'castNotice',
   companionSession: 'companionSession',
   engineMode: 'engineMode', // chrome.storage.local
+  transcodeSettings: 'transcodeSettings', // chrome.storage.local
+  syncTarget: 'syncTarget',
 } as const;
+
+const DEFAULT_TRANSCODE: TranscodeSettings = { profile: 'compat', quality: 'auto' };
 
 /** What the background needs to retry a cast through another engine. */
 interface CastContext {
@@ -78,6 +86,8 @@ interface CastContext {
   mode: EngineMode;
   tried: CastEngine[];
   activeRequestId: string;
+  /** The page player that should become the remote control once the TV plays. */
+  sync: { tabId: number; frameId?: number; videoKey?: string; frameHost?: string };
 }
 
 // ---------------------------------------------------------------- tab state persistence
@@ -333,12 +343,8 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           break;
         }
         await chrome.storage.session.remove(KEY.castNotice);
-        if (pending) {
-          // The TV is playing: stop the page's own playback to avoid double audio.
-          void chrome.tabs
-            .sendMessage(pending.sourceTabId, { type: 'content/pause-local' } satisfies BackgroundToContent)
-            .catch(() => undefined);
-        }
+        // The TV is playing: turn the page's player into a remote (this also pauses it).
+        await startSync(raw.requestId, pending);
         break;
       }
     }
@@ -352,6 +358,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
 async function onControllerStatus(status: CastStatus): Promise<void> {
   const previous = (await chrome.storage.session.get(KEY.castStatus))[KEY.castStatus] as CastStatus | undefined;
   await chrome.storage.session.set({ [KEY.castStatus]: status });
+  await routeToPage(status);
   // The controller needs a click (user gesture) to open Chrome's device picker; bring it forward.
   if (status.phase === 'awaiting-device' && previous?.phase !== 'awaiting-device') await focusController();
 }
@@ -384,28 +391,36 @@ async function engineMode(): Promise<EngineMode> {
   return ((await chrome.storage.local.get(KEY.engineMode))[KEY.engineMode] as EngineMode | undefined) ?? 'auto';
 }
 
+async function transcodeSettings(): Promise<TranscodeSettings> {
+  const stored = (await chrome.storage.local.get(KEY.transcodeSettings))[KEY.transcodeSettings] as TranscodeSettings | undefined;
+  return { ...DEFAULT_TRANSCODE, ...stored };
+}
+
 async function companion() {
   const config = await loadCompanionConfig();
   const status = await companionStatus(config);
-  return { config, status, ready: status.state === 'paired' };
+  const ready = status.state === 'paired';
+  return { config, status, ready, ffmpeg: ready && !!status.ffmpeg };
 }
 
 async function popupState(tabId: number): Promise<PopupState> {
-  const [state, tab, session, comp, mode] = await Promise.all([
+  const [state, tab, session, comp, mode, transcode] = await Promise.all([
     readTab(tabId),
     chrome.tabs.get(tabId).catch(() => undefined),
-    chrome.storage.session.get([KEY.castStatus, KEY.castNotice]),
+    chrome.storage.session.get([KEY.castStatus, KEY.castNotice, KEY.syncTarget]),
     companion(),
     engineMode(),
+    transcodeSettings(),
   ]);
   void inspectManifests(tabId);
   const candidates: CandidateView[] = rankCandidates(state).map((c) => ({
     ...c,
-    assessment: withCompanion(assessCastability(c), comp.ready, mode),
+    assessment: withCompanion(assessCastability(c), comp, mode),
   }));
   return {
     companion: comp.status,
     engineMode: mode,
+    transcodeSettings: transcode,
     notice: (session[KEY.castNotice] as string | undefined) ?? null,
     tabId,
     pageUrl: tab?.url ?? state.pageUrl,
@@ -415,6 +430,7 @@ async function popupState(tabId: number): Promise<PopupState> {
     castStatus: (session[KEY.castStatus] as CastStatus | undefined) ?? null,
     controllerConnected: controllerPort !== null,
     controllerUrl: CONTROLLER_URL,
+    sync: syncInfo(session[KEY.syncTarget] as SyncTarget | undefined, (session[KEY.castStatus] as CastStatus | undefined) ?? null),
   };
 }
 
@@ -437,10 +453,11 @@ async function castCandidate(tabId: number, candidateId: string): Promise<PopupC
     void updateTab(tabId, (s) => recordManifest(s, candidate.id, summary));
   }
   const assessment = assessCastability(candidate, probe);
-  if (assessment.blocker) return { ok: false, error: assessment.blocker };
+  // Expired URLs, DRM, …: no engine helps. Unsupported containers are FFmpeg's job (chooseEngine).
+  if (assessment.blocker && assessment.blocker.code !== 'UNSUPPORTED_CONTAINER') return { ok: false, error: assessment.blocker };
 
   const [mode, comp] = await Promise.all([engineMode(), companion()]);
-  const choice = chooseEngine(mode, assessment, comp.ready);
+  const choice = chooseEngine(mode, assessment, comp);
   if ('error' in choice) return { ok: false, error: choice.error };
 
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
@@ -453,15 +470,32 @@ async function castCandidate(tabId: number, candidateId: string): Promise<PopupC
   );
 
   let request = direct;
-  if (choice.engine === 'companion') {
-    const relayed = await relayViaCompanion(comp.config, direct, candidate.kind, upstream);
+  let engine: CastEngine = choice.engine;
+  if (choice.engine !== 'direct') {
+    const force = mode === 'transcode' || assessment.blocker?.code === 'UNSUPPORTED_CONTAINER';
+    const relayed = await relayViaCompanion(comp.config, direct, candidate.kind, upstream, choice.engine === 'transcode' ? force : undefined);
     if (!('requestId' in relayed)) return { ok: false, error: relayed };
     request = relayed;
+    engine = relayed.engine;
   } else {
     await replaceCompanionSession(comp.config, null);
   }
 
-  const context: CastContext = { direct, kind: candidate.kind, upstream, mode, tried: [choice.engine], activeRequestId: request.requestId };
+  const playerFrame = candidate.videoFrameId ?? candidate.frameId;
+  const context: CastContext = {
+    direct,
+    kind: candidate.kind,
+    upstream,
+    mode,
+    tried: [engine],
+    activeRequestId: request.requestId,
+    sync: {
+      tabId,
+      frameId: playerFrame,
+      videoKey: candidate.video?.key,
+      frameHost: playerFrame !== 0 ? new URL(frameUrl(state, playerFrame) ?? 'about:blank').hostname || undefined : undefined,
+    },
+  };
   await chrome.storage.session.set({ [KEY.pendingCast]: request, [KEY.castContext]: context });
   await chrome.storage.session.remove(KEY.castNotice);
 
@@ -470,12 +504,17 @@ async function castCandidate(tabId: number, candidateId: string): Promise<PopupC
   return { ok: true, controller: 'opened' };
 }
 
-/** Opens a companion session for `direct.url` and returns the request rewritten to the relay URL. */
+/**
+ * Opens a companion session for `direct.url` and returns the request rewritten to the companion.
+ * With `transcode` set (false = convert only if needed, true = always), FFmpeg analyses the
+ * stream and the request points at the converted HLS output when conversion was needed.
+ */
 async function relayViaCompanion(
   config: CompanionConfig,
   direct: CastRequest,
   kind: StreamKind,
   upstream: UpstreamContext,
+  transcode?: boolean,
 ): Promise<CastRequest | CastError> {
   let session;
   try {
@@ -483,6 +522,7 @@ async function relayViaCompanion(
       url: direct.url,
       kind: kind === 'hls' || kind === 'dash' || kind === 'progressive' ? kind : 'unknown',
       context: upstream,
+      transcode: transcode === undefined ? undefined : { mode: transcode ? 'force' : 'auto', ...(await transcodeSettings()) },
     });
   } catch (e) {
     const code = e instanceof CompanionError && e.code === 'BLOCKED_ADDRESS' ? 'STREAM_UNAVAILABLE' : 'COMPANION_UNAVAILABLE';
@@ -503,7 +543,26 @@ async function relayViaCompanion(
     return err('STREAM_UNAVAILABLE', `The companion could not fetch the stream (${check.status ? `HTTP ${check.status}` : (check.error ?? 'unknown error')}).`);
   }
   await replaceCompanionSession(config, session.sessionId);
-  return { ...direct, requestId: crypto.randomUUID(), url: session.mediaUrl, engine: 'companion' };
+  const media = session.media;
+  if (!media) {
+    // Relayed unchanged (no conversion requested, needed, or possible).
+    return { ...direct, requestId: crypto.randomUUID(), url: session.mediaUrl, engine: 'companion', plan: session.plan };
+  }
+  return {
+    ...direct,
+    requestId: crypto.randomUUID(),
+    url: session.mediaUrl,
+    contentType: media.contentType,
+    streamType: media.streamType,
+    hlsSegmentFormat: media.hlsSegmentFormat,
+    hlsVideoSegmentFormat: media.hlsVideoSegmentFormat,
+    duration: media.duration ?? direct.duration,
+    // Remuxed output only grows from the start, so resuming mid-way works only when segmented.
+    startTime: media.seekable ? direct.startTime : undefined,
+    textTracks: media.textTracks,
+    plan: session.plan,
+    engine: 'transcode',
+  };
 }
 
 /** Keeps at most one companion session per browser: the one currently cast. */
@@ -514,20 +573,26 @@ async function replaceCompanionSession(config: CompanionConfig, sessionId: strin
   else await chrome.storage.session.remove(KEY.companionSession);
 }
 
-/** Direct cast failed on the receiver: retry once through the companion when that can help. */
+const ENGINE_LABEL: Record<CastEngine, string> = { direct: 'Direct casting', companion: 'Relaying', transcode: 'Converting' };
+
+/** The receiver failed: step down the ladder (direct → companion → FFmpeg) when that can help. */
 async function fallBackToCompanion(requestId: string, error: CastError): Promise<void> {
   const context = (await chrome.storage.session.get(KEY.castContext))[KEY.castContext] as CastContext | undefined;
   if (!context || context.activeRequestId !== requestId) return;
   const comp = await companion();
-  if (!shouldFallBack(context.mode, context.tried, error, comp.ready)) return;
+  const next = nextEngine(context.mode, context.tried, error, comp);
+  if (!next) return;
 
-  await chrome.storage.session.set({ [KEY.castNotice]: `Direct casting failed (${error.message}). Retrying through the local companion…` });
-  const relayed = await relayViaCompanion(comp.config, context.direct, context.kind, context.upstream);
+  const failed = ENGINE_LABEL[context.tried.at(-1) ?? 'direct'];
+  const action = next.engine === 'transcode' ? 'Letting the local companion check and convert the stream' : 'Retrying through the local companion';
+  await chrome.storage.session.set({ [KEY.castNotice]: `${failed} failed (${error.message}). ${action}…` });
+  const relayed = await relayViaCompanion(comp.config, context.direct, context.kind, context.upstream, next.engine === 'transcode' ? next.force : undefined);
   if (!('requestId' in relayed)) {
-    await chrome.storage.session.set({ [KEY.castNotice]: `Direct casting failed, and the companion could not help: ${relayed.message}` });
+    await chrome.storage.session.set({ [KEY.castNotice]: `${failed} failed, and the companion could not help: ${relayed.message}` });
     return;
   }
-  context.tried.push('companion');
+  // An analysis that found nothing to convert relays the stream unchanged.
+  context.tried.push(relayed.engine);
   context.activeRequestId = relayed.requestId;
   await chrome.storage.session.set({ [KEY.pendingCast]: relayed, [KEY.castContext]: context });
   if (!postToController({ type: 'controller/load', request: relayed })) await openController();
@@ -540,6 +605,96 @@ async function pairWithCompanion(code: string): Promise<CompanionPairResult> {
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+}
+
+// ---------------------------------------------------------------- page player sync
+
+async function syncTarget(): Promise<SyncTarget | undefined> {
+  return (await chrome.storage.session.get(KEY.syncTarget))[KEY.syncTarget] as SyncTarget | undefined;
+}
+
+function sendToPage(target: Pick<SyncTarget, 'tabId' | 'frameId'>, message: BackgroundToContent): Promise<unknown> {
+  return chrome.tabs.sendMessage(target.tabId, message, { frameId: target.frameId ?? 0 });
+}
+
+/** The cast is verified playing: ask the source page's player to act as a remote control. */
+async function startSync(requestId: string, pending: CastRequest | undefined): Promise<void> {
+  const context = (await chrome.storage.session.get(KEY.castContext))[KEY.castContext] as CastContext | undefined;
+  const previous = await syncTarget();
+  if (previous && previous.requestId !== requestId && previous.state === 'active') {
+    await sendToPage(previous, { type: 'content/sync-stop', requestId: previous.requestId, reason: 'replaced', lastTime: null, wasPlaying: false }).catch(() => undefined);
+  }
+  const where = context?.activeRequestId === requestId ? context.sync : pending ? { tabId: pending.sourceTabId } : undefined;
+  if (!where) return;
+  const status = (await chrome.storage.session.get(KEY.castStatus))[KEY.castStatus] as CastStatus | undefined;
+
+  let response: SyncStartResponse | undefined;
+  try {
+    response = (await sendToPage(where, {
+      type: 'content/sync-start',
+      requestId,
+      videoKey: where.videoKey,
+      deviceName: status?.deviceName,
+    })) as SyncStartResponse | undefined;
+  } catch {
+    response = undefined;
+  }
+
+  const base = { tabId: where.tabId, frameId: where.frameId, frameHost: where.frameHost, requestId, lastTime: null, wasPlaying: true, deviceName: status?.deviceName };
+  if (response?.ok) {
+    await chrome.storage.session.set({ [KEY.syncTarget]: { ...base, videoKey: response.videoKey, state: 'active' } satisfies SyncTarget });
+    return;
+  }
+  // No controllable player: at least silence the page so audio doesn't play twice.
+  void chrome.tabs.sendMessage(where.tabId, { type: 'content/pause-local' } satisfies BackgroundToContent).catch(() => undefined);
+  const reason = response?.reason ?? 'The page’s player could not be reached (it may have navigated away or be inaccessible). Use Castit’s controls.';
+  await chrome.storage.session.set({ [KEY.syncTarget]: { ...base, state: 'unavailable', reason } satisfies SyncTarget });
+}
+
+/** Mirrors receiver state onto the page player and ends the sync when the cast ends. */
+async function routeToPage(status: CastStatus): Promise<void> {
+  const target = await syncTarget();
+  if (!target) return;
+  const route = routeStatus(target, status);
+  const next = { ...target, ...route.update };
+  if (target.state === 'active' && route.forward) {
+    void sendToPage(target, { type: 'content/sync-state', requestId: target.requestId, state: route.forward }).catch(() => undefined);
+  }
+  if (route.stop) {
+    if (target.state === 'active') {
+      void sendToPage(target, {
+        type: 'content/sync-stop',
+        requestId: target.requestId,
+        reason: route.stop,
+        lastTime: next.lastTime,
+        wasPlaying: next.wasPlaying,
+      }).catch(() => undefined);
+    }
+    await chrome.storage.session.remove(KEY.syncTarget);
+    return;
+  }
+  if (next.lastTime !== target.lastTime || next.wasPlaying !== target.wasPlaying || next.deviceName !== target.deviceName) {
+    await chrome.storage.session.set({ [KEY.syncTarget]: next });
+  }
+}
+
+/** Accepts remote commands only from the frame and cast the sync was set up for. */
+async function onPageRemote(sender: chrome.runtime.MessageSender, requestId: string, command: RemoteCommand): Promise<void> {
+  const target = await syncTarget();
+  if (!target || target.state !== 'active' || target.requestId !== requestId) return;
+  if (sender.tab?.id !== target.tabId || (sender.frameId ?? 0) !== (target.frameId ?? 0)) return;
+  sendCommand(command);
+}
+
+async function onSyncLost(sender: chrome.runtime.MessageSender, requestId: string, reason: string): Promise<void> {
+  const target = await syncTarget();
+  if (!target || target.requestId !== requestId || sender.tab?.id !== target.tabId) return;
+  await chrome.storage.session.set({ [KEY.syncTarget]: { ...target, state: 'unavailable', reason } satisfies SyncTarget });
+}
+
+function syncInfo(target: SyncTarget | undefined, status: CastStatus | null): SyncInfo {
+  if (!target || !status?.sessionActive) return { state: 'off' };
+  return { state: target.state, frameHost: target.frameHost, reason: target.reason };
 }
 
 function sendCommand(command: RemoteCommand): CommandResponse {
@@ -555,6 +710,12 @@ function sendCommand(command: RemoteCommand): CommandResponse {
 
 chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupRequest, sender, sendResponse) => {
   switch (message.type) {
+    case 'content/remote':
+      void onPageRemote(sender, message.requestId, message.command);
+      return false;
+    case 'content/sync-lost':
+      void onSyncLost(sender, message.requestId, message.reason);
+      return false;
     case 'content/report': {
       const tabId = sender.tab?.id;
       if (tabId === undefined || sender.frameId === undefined) return false;
@@ -587,6 +748,9 @@ chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupReques
       void loadCompanionConfig()
         .then((config) => saveCompanionConfig({ url: config.url }))
         .then(() => sendResponse({ ok: true }));
+      return true;
+    case 'popup/set-transcode':
+      void chrome.storage.local.set({ [KEY.transcodeSettings]: message.settings }).then(() => sendResponse({ ok: true }));
       return true;
     case 'popup/set-engine':
       void chrome.storage.local.set({ [KEY.engineMode]: message.mode }).then(() => sendResponse({ ok: true }));

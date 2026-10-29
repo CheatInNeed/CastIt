@@ -47,7 +47,18 @@ function render(s: CastStatus, queuedUrl?: string): void {
   } catch {
     /* none */
   }
-  $('media-meta').textContent = host ? `Stream from ${host}` : '';
+  const via = s.engine === 'transcode' ? ' · converted by the local companion' : s.engine === 'companion' ? ' · relayed by the local companion' : '';
+  $('media-meta').textContent = host ? `Stream from ${host}${via}` : '';
+  const plan = $('media-plan');
+  plan.hidden = !s.plan || s.plan.action === 'direct';
+  plan.textContent = s.plan ? s.plan.details.join(' · ') : '';
+  const subsRow = $('subs-row');
+  const subs = $<HTMLSelectElement>('subs');
+  subsRow.hidden = !s.textTracks?.length;
+  if (s.textTracks?.length && document.activeElement !== subs) {
+    subs.replaceChildren(new Option('Off', ''), ...s.textTracks.map((t) => new Option(t.name, String(t.id))));
+    subs.value = s.activeTextTrack ? String(s.activeTextTrack) : '';
+  }
 
   const choose = $<HTMLButtonElement>('choose-device');
   choose.hidden = s.sessionActive && s.phase !== 'awaiting-device';
@@ -146,6 +157,8 @@ async function main(): Promise<void> {
   });
   const volume = $<HTMLInputElement>('volume');
   volume.addEventListener('change', () => run({ type: 'volume', level: Number(volume.value) }));
+  const subs = $<HTMLSelectElement>('subs');
+  subs.addEventListener('change', () => run({ type: 'subtitles', trackId: subs.value ? Number(subs.value) : null }));
 }
 
 void main();

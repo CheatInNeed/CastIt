@@ -14,6 +14,8 @@ export interface CompanionSettings {
   /** Allow relaying from private/loopback upstreams (tests, LAN media servers). Off by default. */
   allowPrivateUpstreams: boolean;
   configDir: string;
+  ffmpegPath: string;
+  ffprobePath: string;
 }
 
 export function settingsFromEnv(env = process.env, argv = process.argv.slice(2)): CompanionSettings {
@@ -28,6 +30,8 @@ export function settingsFromEnv(env = process.env, argv = process.argv.slice(2))
     publicHost: arg('public-host') ?? env.CASTIT_PUBLIC_HOST ?? pickLanAddress(networkInterfaces()) ?? '127.0.0.1',
     allowPrivateUpstreams: argv.includes('--allow-private') || env.CASTIT_ALLOW_PRIVATE === '1',
     configDir: arg('config-dir') ?? env.CASTIT_HOME ?? join(homedir(), '.castit'),
+    ffmpegPath: arg('ffmpeg') ?? env.CASTIT_FFMPEG ?? 'ffmpeg',
+    ffprobePath: arg('ffprobe') ?? env.CASTIT_FFPROBE ?? 'ffprobe',
   };
 }
 

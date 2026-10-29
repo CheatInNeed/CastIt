@@ -27,6 +27,18 @@ export function buildLoadRequest(req: CastRequest): chrome.cast.media.LoadReques
   if (req.hlsSegmentFormat) info.hlsSegmentFormat = req.hlsSegmentFormat;
   if (req.hlsVideoSegmentFormat) info.hlsVideoSegmentFormat = req.hlsVideoSegmentFormat;
 
+  if (req.textTracks?.length) {
+    info.tracks = req.textTracks.map((t) => {
+      const track = new chrome.cast.media.Track(t.id, chrome.cast.media.TrackType.TEXT);
+      track.trackContentId = t.url;
+      track.trackContentType = 'text/vtt';
+      track.subtype = chrome.cast.media.TextTrackType.SUBTITLES;
+      track.name = t.name;
+      if (t.language) track.language = t.language;
+      return track;
+    });
+  }
+
   const metadata = new chrome.cast.media.GenericMediaMetadata();
   metadata.title = req.title;
   if (req.subtitle) metadata.subtitle = req.subtitle;
@@ -227,6 +239,10 @@ export class CastController {
     const derived = session ? this.remote.phase(this.idleReason()) : 'idle';
     const req = this.current ?? this.pending;
     const metadata = player.mediaInfo?.metadata as { title?: string } | undefined;
+    const textTracks = (player.mediaInfo?.tracks ?? [])
+      .filter((t) => t.type === chrome.cast.media.TrackType.TEXT)
+      .map((t) => ({ id: t.trackId, name: t.name || t.language || `Track ${t.trackId}`, language: t.language || undefined }));
+    const active = session?.getMediaSession()?.activeTrackIds ?? [];
     return {
       phase: this.override ?? derived,
       sessionActive: !!session,
@@ -244,6 +260,9 @@ export class CastController {
       requestId: req?.requestId,
       sourceTabId: req?.sourceTabId,
       engine: req?.engine,
+      plan: req?.plan,
+      textTracks,
+      activeTextTrack: textTracks.find((t) => active.includes(t.id))?.id ?? null,
       error: this.error,
       updatedAt: Date.now(),
     };

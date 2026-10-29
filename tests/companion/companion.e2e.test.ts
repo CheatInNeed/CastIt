@@ -1,5 +1,5 @@
 // End-to-end: the real companion servers relaying from a local mock upstream.
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -77,6 +77,12 @@ function upstreamHandler(req: IncomingMessage, res: ServerResponse): void {
 }
 
 let companion: RunningCompanion;
+const tempDirs: string[] = [];
+const tempDir = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+};
 let apiKey = '';
 const json = { 'content-type': 'application/json' };
 
@@ -118,7 +124,9 @@ beforeAll(async () => {
     mediaListenHost: '::',
     publicHost: '127.0.0.1',
     allowPrivateUpstreams: true,
-    configDir: mkdtempSync(join(tmpdir(), 'castit-e2e-')),
+    configDir: tempDir('castit-e2e-'),
+    ffmpegPath: '/nonexistent/ffmpeg',
+    ffprobePath: '/nonexistent/ffprobe',
     log: () => undefined,
     // Treat every client as a remote device so device binding can be exercised from loopback.
     isLocalClient: () => false,
@@ -132,12 +140,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await companion?.close();
   await new Promise((r) => upstream?.close(r));
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
 
 describe('control API', () => {
   it('reports health and requires pairing for sessions', async () => {
     const health = await (await api('/api/health', {}, '')).json();
-    expect(health).toMatchObject({ name: 'castit-companion', paired: true, protocol: 1 });
+    expect(health).toMatchObject({ name: 'castit-companion', paired: true, protocol: 1, ffmpeg: false });
     const res = await api('/api/sessions', { method: 'POST', body: '{}' }, 'wrong-key');
     expect(res.status).toBe(401);
   });
@@ -258,6 +267,18 @@ describe('progressive relay', () => {
   });
 });
 
+describe('conversion without FFmpeg', () => {
+  it('relays unchanged and explains why', async () => {
+    const res = await api('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ url: `${up}/movie.mp4`, kind: 'progressive', context: {}, transcode: { mode: 'force', profile: 'compat', quality: 'auto' } }),
+    });
+    const body = (await res.json()) as CreateSessionResponse;
+    expect(body.delivery).toBe('relay');
+    expect(body.analysisError).toMatch(/FFmpeg not found/);
+  });
+});
+
 describe('session security', () => {
   it('refuses hosts that were not part of the session', async () => {
     const s = await session(`${up}/movie.mp4`, 'progressive');
@@ -285,7 +306,9 @@ describe('session security', () => {
       mediaListenHost: '127.0.0.1',
       publicHost: '127.0.0.1',
       allowPrivateUpstreams: false,
-      configDir: mkdtempSync(join(tmpdir(), 'castit-strict-')),
+      configDir: tempDir('castit-strict-'),
+      ffmpegPath: '/nonexistent/ffmpeg',
+      ffprobePath: '/nonexistent/ffprobe',
       log: () => undefined,
     });
     try {

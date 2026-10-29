@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CastabilityAssessment } from '@castit/shared';
-import { chooseEngine, shouldFallBack, upstreamContextFor, withCompanion } from '../../apps/extension/src/lib/engine.ts';
+import { chooseEngine, nextEngine, upstreamContextFor, withCompanion } from '../../apps/extension/src/lib/engine.ts';
 import { assessCastability } from '../../apps/extension/src/lib/castability.ts';
 import { candidate } from './helpers.ts';
 
@@ -17,45 +17,80 @@ describe('castability → companion signal', () => {
   });
 });
 
+const ready = { ready: true, ffmpeg: false };
+const withFfmpeg = { ready: true, ffmpeg: true };
+const offline = { ready: false, ffmpeg: false };
+const mkv: CastabilityAssessment = { level: 'possible', engine: 'direct', notes: [], transcodeHelps: 'MKV may need converting' };
+const flv: CastabilityAssessment = {
+  level: 'unsupported',
+  engine: null,
+  notes: ['Chromecast cannot play FLV files directly'],
+  blocker: { code: 'UNSUPPORTED_CONTAINER', message: 'Chromecast cannot play FLV files directly' },
+  transcodeHelps: 'FLV files must be converted',
+};
+
 describe('chooseEngine', () => {
-  it('auto: direct unless the companion is ready and would help', () => {
-    expect(chooseEngine('auto', plain, true)).toEqual({ engine: 'direct' });
-    expect(chooseEngine('auto', noCors, false)).toEqual({ engine: 'direct' });
-    expect(chooseEngine('auto', noCors, true)).toEqual({ engine: 'companion' });
+  it('auto: cheapest engine that addresses the known problem', () => {
+    expect(chooseEngine('auto', plain, withFfmpeg)).toEqual({ engine: 'direct' });
+    expect(chooseEngine('auto', noCors, offline)).toEqual({ engine: 'direct' });
+    expect(chooseEngine('auto', noCors, ready)).toEqual({ engine: 'companion' });
+    expect(chooseEngine('auto', mkv, ready)).toEqual({ engine: 'direct' });
+    expect(chooseEngine('auto', mkv, withFfmpeg)).toEqual({ engine: 'transcode' });
+  });
+
+  it('converts unsupported containers only through FFmpeg', () => {
+    expect(chooseEngine('auto', flv, withFfmpeg)).toEqual({ engine: 'transcode' });
+    expect(chooseEngine('auto', flv, ready)).toMatchObject({ error: { code: 'TRANSCODE_FAILED' } });
+    expect(chooseEngine('auto', flv, offline)).toMatchObject({ error: { code: 'UNSUPPORTED_CONTAINER' } });
+    expect(chooseEngine('direct', flv, withFfmpeg)).toMatchObject({ error: { code: 'UNSUPPORTED_CONTAINER' } });
   });
 
   it('honours forced modes', () => {
-    expect(chooseEngine('direct', noCors, true)).toEqual({ engine: 'direct' });
-    expect(chooseEngine('companion', plain, true)).toEqual({ engine: 'companion' });
-    const missing = chooseEngine('companion', plain, false);
-    expect('error' in missing && missing.error.code).toBe('COMPANION_UNAVAILABLE');
+    expect(chooseEngine('direct', noCors, withFfmpeg)).toEqual({ engine: 'direct' });
+    expect(chooseEngine('companion', plain, ready)).toEqual({ engine: 'companion' });
+    expect(chooseEngine('companion', plain, offline)).toMatchObject({ error: { code: 'COMPANION_UNAVAILABLE' } });
+    expect(chooseEngine('transcode', plain, withFfmpeg)).toEqual({ engine: 'transcode' });
+    expect(chooseEngine('transcode', plain, ready)).toMatchObject({ error: { code: 'TRANSCODE_FAILED' } });
   });
 });
 
 describe('withCompanion', () => {
   it('upgrades the shown rating only when the companion is ready', () => {
-    expect(withCompanion(noCors, true, 'auto')).toMatchObject({ level: 'likely', engine: 'companion' });
-    expect(withCompanion({ ...noCors, level: 'unlikely' }, true, 'auto').level).toBe('possible');
-    const offline = withCompanion(noCors, false, 'auto');
-    expect(offline.level).toBe('possible');
-    expect(offline.notes.at(-1)).toMatch(/not running or not paired/);
-    expect(withCompanion(noCors, true, 'direct')).toBe(noCors);
+    expect(withCompanion(noCors, ready, 'auto')).toMatchObject({ level: 'likely', engine: 'companion' });
+    expect(withCompanion({ ...noCors, level: 'unlikely' }, ready, 'auto').level).toBe('possible');
+    const off = withCompanion(noCors, offline, 'auto');
+    expect(off.level).toBe('possible');
+    expect(off.notes.at(-1)).toMatch(/not running or not paired/);
+    expect(withCompanion(noCors, ready, 'direct')).toBe(noCors);
   });
 
-  it('never overrides blockers', () => {
-    const drm: CastabilityAssessment = { level: 'unsupported', engine: null, notes: [], blocker: { code: 'DRM', message: 'x' }, companionHelps: 'x' };
-    expect(withCompanion(drm, true, 'companion')).toBe(drm);
+  it('lifts container blockers when FFmpeg can convert', () => {
+    const lifted = withCompanion(flv, withFfmpeg, 'auto');
+    expect(lifted).toMatchObject({ level: 'likely', engine: 'transcode' });
+    expect(lifted.blocker).toBeUndefined();
+    expect(withCompanion(flv, ready, 'auto').blocker?.code).toBe('UNSUPPORTED_CONTAINER');
+  });
+
+  it('never overrides other blockers', () => {
+    const drm: CastabilityAssessment = { level: 'unsupported', engine: null, notes: [], blocker: { code: 'DRM', message: 'x' }, companionHelps: 'x', transcodeHelps: 'x' };
+    expect(withCompanion(drm, withFfmpeg, 'transcode')).toBe(drm);
   });
 });
 
-describe('shouldFallBack', () => {
+describe('nextEngine', () => {
   const failed = { code: 'RECEIVER_LOAD_FAILED' as const, message: 'x' };
-  it('retries once through the companion for receiver-side failures in auto mode', () => {
-    expect(shouldFallBack('auto', ['direct'], failed, true)).toBe(true);
-    expect(shouldFallBack('auto', ['direct', 'companion'], failed, true)).toBe(false);
-    expect(shouldFallBack('direct', ['direct'], failed, true)).toBe(false);
-    expect(shouldFallBack('auto', ['direct'], failed, false)).toBe(false);
-    expect(shouldFallBack('auto', ['direct'], { code: 'NO_DEVICE', message: 'x' }, true)).toBe(false);
+  it('steps down the ladder in automatic mode', () => {
+    expect(nextEngine('auto', ['direct'], failed, withFfmpeg)).toEqual({ engine: 'transcode', force: false });
+    expect(nextEngine('auto', ['direct'], failed, ready)).toEqual({ engine: 'companion', force: false });
+    expect(nextEngine('auto', ['direct', 'companion'], failed, withFfmpeg)).toEqual({ engine: 'transcode', force: true });
+    expect(nextEngine('auto', ['direct', 'companion'], failed, ready)).toBeNull();
+    expect(nextEngine('auto', ['direct', 'transcode'], failed, withFfmpeg)).toBeNull();
+  });
+
+  it('does not retry in forced modes, without a companion, or for unrelated errors', () => {
+    expect(nextEngine('direct', ['direct'], failed, withFfmpeg)).toBeNull();
+    expect(nextEngine('auto', ['direct'], failed, offline)).toBeNull();
+    expect(nextEngine('auto', ['direct'], { code: 'NO_DEVICE', message: 'x' }, withFfmpeg)).toBeNull();
   });
 });
 

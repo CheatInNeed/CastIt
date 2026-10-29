@@ -39,6 +39,24 @@ export class Remote {
       return { code: 'NO_DEVICE', message: 'No Cast session is active.' };
     }
     const mediaCommand = command.type !== 'volume' && command.type !== 'mute' && command.type !== 'disconnect';
+    if (command.type === 'subtitles') {
+      const media = cast.framework.CastContext.getInstance().getCurrentSession()?.getMediaSession();
+      if (!media) return { code: 'RECEIVER_LOAD_FAILED', message: 'Nothing is loaded on the Chromecast.' };
+      const request = new chrome.cast.media.EditTracksInfoRequest(command.trackId === null ? [] : [command.trackId]);
+      media.editTracksInfo(request, () => undefined, () => undefined);
+      return null;
+    }
+    if (command.type === 'rate') {
+      // RemotePlayer has no rate setter; send the standard media-namespace message (CAF receivers support it).
+      const session = cast.framework.CastContext.getInstance().getCurrentSession();
+      const media = session?.getMediaSession();
+      if (!session || !media) return { code: 'RECEIVER_LOAD_FAILED', message: 'Nothing is loaded on the Chromecast.' };
+      const rate = Math.max(0.5, Math.min(2, command.rate));
+      void session
+        .sendMessage('urn:x-cast:com.google.cast.media', { type: 'SET_PLAYBACK_RATE', mediaSessionId: media.mediaSessionId, playbackRate: rate, requestId: Date.now() % 1e9 })
+        .catch(() => undefined);
+      return null;
+    }
     if (mediaCommand && !player.isMediaLoaded) {
       return { code: 'RECEIVER_LOAD_FAILED', message: 'Nothing is loaded on the Chromecast.' };
     }

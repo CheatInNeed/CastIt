@@ -15,7 +15,9 @@ Options:
   --media-port <port>    LAN media port (default 47801)
   --control-port <port>  Localhost control port (default 47800)
   --allow-private        Allow relaying from private/LAN upstream servers (off by default)
-  --config-dir <dir>     Where pairing data is stored (default ~/.castit)`);
+  --config-dir <dir>     Where pairing data is stored (default ~/.castit)
+  --ffmpeg <path>        FFmpeg binary (default: ffmpeg on PATH)
+  --ffprobe <path>       ffprobe binary (default: ffprobe on PATH)`);
   process.exit(0);
 }
 
@@ -30,7 +32,8 @@ if (argv.includes('--unpair-all')) companion.store.revokeAll();
 console.log(`
 Castit companion ${VERSION}
   control API : ${companion.controlUrl}  (this computer only)
-  media server: ${companion.mediaBaseUrl}  (Chromecast fetches from here)`);
+  media server: ${companion.mediaBaseUrl}  (Chromecast fetches from here)
+  transcoding : ${companion.ffmpeg.available ? `FFmpeg ${companion.ffmpeg.version ?? ''} · ${companion.ffmpeg.encoder.hardware ? `hardware (${companion.ffmpeg.encoder.name})` : 'software (libx264)'}` : `off: ${companion.ffmpeg.error}`}`);
 if (settings.allowPrivateUpstreams) console.log('  WARNING: --allow-private is on; LAN/loopback upstreams can be relayed.');
 
 if (!companion.store.paired || argv.includes('--pair') || argv.includes('--unpair-all')) {
@@ -42,6 +45,9 @@ if (!companion.store.paired || argv.includes('--pair') || argv.includes('--unpai
 } else {
   console.log('\n  Already paired. Run with --pair to pair another browser.\n');
 }
+
+// Kill FFmpeg and delete temp folders even on an abrupt exit.
+process.on('exit', () => companion.closeSync());
 
 const shutdown = async () => {
   console.log('\nStopping companion…');

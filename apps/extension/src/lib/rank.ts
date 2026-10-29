@@ -255,6 +255,7 @@ function enrich(state: TabMediaState, item: RankedCandidate): void {
   }
   const frameId = video?.frameId ?? item.frameId;
   item.drmHint = state.frames[String(frameId)]?.emeKeySystems ?? [];
+  if (video) item.videoFrameId = video.frameId;
   item.live = item.manifest?.live ?? video?.live ?? false;
   item.quality = qualityLabel(item.manifest?.maxHeight) ?? qualityLabel(video?.videoHeight);
 }

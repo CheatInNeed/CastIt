@@ -3,6 +3,7 @@ import {
   type CompanionPairResult,
   type CompanionStatus,
   type EngineMode,
+  type TranscodeSettings,
   PHASE_LABELS,
   type CandidateView,
   type CastError,
@@ -43,8 +44,19 @@ function render(): void {
   renderConnection(state);
   renderCandidates(state);
   renderNow(state.castStatus);
-  renderCompanion(state.companion, state.engineMode);
+  renderSync(state);
+  renderCompanion(state.companion, state.engineMode, state.transcodeSettings);
   renderNotice(state.notice);
+}
+
+function renderSync(s: PopupState): void {
+  const line = $('now-sync');
+  const sync = s.sync;
+  line.hidden = sync.state === 'off';
+  line.textContent =
+    sync.state === 'active'
+      ? `The page’s own player is your remote${sync.frameHost ? ` (player on ${sync.frameHost})` : ''}: play, pause and seek there.`
+      : (sync.reason ?? '');
 }
 
 function renderNotice(notice: string | null): void {
@@ -60,7 +72,7 @@ const COMPANION_LABEL: Record<CompanionStatus['state'], string> = {
   paired: 'Ready',
 };
 
-function renderCompanion(status: CompanionStatus, mode: EngineMode): void {
+function renderCompanion(status: CompanionStatus, mode: EngineMode, transcode: TranscodeSettings): void {
   const pill = $('companion-state');
   pill.textContent = COMPANION_LABEL[status.state];
   pill.className = `pill small ${status.state === 'paired' ? 'on' : ''}`;
@@ -69,8 +81,17 @@ function renderCompanion(status: CompanionStatus, mode: EngineMode): void {
     status.state === 'offline'
       ? 'Optional. Relays streams the Chromecast cannot fetch itself (missing CORS, Referer checks). Start it with `npm run companion`.'
       : status.state === 'paired'
-        ? `Relaying via ${status.mediaBaseUrl ?? 'your computer'} when needed.`
+        ? `Relaying via ${status.mediaBaseUrl ?? 'your computer'} when needed. ${
+            status.ffmpeg
+              ? `Converting with FFmpeg (${status.hwEncoder ? `hardware: ${status.hwEncoder.replace('h264_', '')}` : 'software'}).`
+              : 'FFmpeg not found: streams the TV cannot decode will not be converted.'
+          }`
         : 'Enter the pairing code shown in the companion terminal.';
+  $('transcode-settings').hidden = !(status.state === 'paired' && status.ffmpeg);
+  const profile = $<HTMLSelectElement>('tc-profile');
+  const quality = $<HTMLSelectElement>('tc-quality');
+  if (document.activeElement !== profile) profile.value = transcode.profile;
+  if (document.activeElement !== quality) quality.value = transcode.quality;
   $('pair-form').hidden = status.state !== 'unpaired' && status.state !== 'rejected';
   $('companion-forget').hidden = status.state !== 'paired' && status.state !== 'rejected';
   const select = $<HTMLSelectElement>('engine-mode');
@@ -207,7 +228,18 @@ function renderNow(status: CastStatus | null): void {
   if (!status || !active) return;
 
   $('now-device').textContent =
-    (status.deviceName ? ` · ${status.deviceName}` : '') + (status.engine === 'companion' ? ' · via companion' : '');
+    (status.deviceName ? ` · ${status.deviceName}` : '') +
+    (status.engine === 'companion' ? ' · via companion' : status.engine === 'transcode' ? ' · converted' : '');
+  const plan = $('now-plan');
+  plan.hidden = !status.plan?.details.length || status.plan.action === 'direct';
+  plan.textContent = status.plan ? status.plan.details.join(' · ') : '';
+  const subsRow = $('now-subs-row');
+  const subs = $<HTMLSelectElement>('now-subs');
+  subsRow.hidden = !status.textTracks?.length;
+  if (status.textTracks?.length && document.activeElement !== subs) {
+    subs.replaceChildren(new Option('Off', ''), ...status.textTracks.map((t) => new Option(t.name, String(t.id))));
+    subs.value = status.activeTextTrack ? String(status.activeTextTrack) : '';
+  }
   $('now-phase').textContent = PHASE_LABELS[status.phase] ?? status.phase;
   $('now-title').textContent = status.title ?? '';
 
@@ -286,6 +318,20 @@ function wire(): void {
     await send({ type: 'popup/companion-forget' });
     await refresh();
   });
+  const saveTranscode = async () => {
+    const settings: TranscodeSettings = {
+      profile: $<HTMLSelectElement>('tc-profile').value as TranscodeSettings['profile'],
+      quality: $<HTMLSelectElement>('tc-quality').value as TranscodeSettings['quality'],
+    };
+    await send({ type: 'popup/set-transcode', settings });
+    await refresh();
+  };
+  $('tc-profile').addEventListener('change', () => void saveTranscode());
+  $('tc-quality').addEventListener('change', () => void saveTranscode());
+  $('now-subs').addEventListener('change', () => {
+    const value = $<HTMLSelectElement>('now-subs').value;
+    void command({ type: 'subtitles', trackId: value ? Number(value) : null });
+  });
   $('engine-mode').addEventListener('change', async () => {
     await send({ type: 'popup/set-engine', mode: $<HTMLSelectElement>('engine-mode').value as EngineMode });
     await refresh();
@@ -299,6 +345,7 @@ function wire(): void {
       renderConnection(state);
       renderNow(state.castStatus);
     }
+    if (changes.syncTarget && state) void refresh();
     if (changes.castNotice && state) {
       state.notice = (changes.castNotice.newValue as string | undefined) ?? null;
       renderNotice(state.notice);

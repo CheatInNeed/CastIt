@@ -2,6 +2,7 @@
 // buffering beyond Node's stream highWaterMark), forwards Range requests, rewrites manifests,
 // turns upstream redirects into proxied redirects, and aborts upstream work when the receiver
 // disconnects.
+import { createReadStream, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
@@ -18,6 +19,7 @@ import {
 } from './manifest.ts';
 import { isThisMachine, normalizeRemote, redactUrl, UpstreamBlockedError, validateUpstreamUrl } from './security.ts';
 import { originOf, type MediaSession, type SessionStore } from './sessions.ts';
+import { JobFileNotFound, type JobManager } from './transcoder.ts';
 import { requestUpstream, upstreamHeaders } from './upstream.ts';
 
 export const MAX_MANIFEST_BYTES = 10 * 1024 * 1024;
@@ -30,7 +32,18 @@ export interface MediaContext {
   log: (message: string) => void;
   /** Requests from this computer never claim a session's device binding (overridable in tests). */
   isLocalClient?: (address: string) => boolean;
+  jobs?: JobManager;
 }
+
+const JOB_PATH = /^\/t\/([A-Za-z0-9_-]{16,})\/([A-Za-z0-9_.-]+)(?:\?.*)?$/;
+
+const JOB_TYPES: Array<[RegExp, string]> = [
+  [/\.m3u8$/, 'application/vnd.apple.mpegurl'],
+  [/\.ts$/, 'video/mp2t'],
+  [/\.m4s$/, 'video/iso.segment'],
+  [/\.mp4$/, 'video/mp4'],
+  [/\.vtt(\.part)?$/, 'text/vtt; charset=utf-8'],
+];
 
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
@@ -49,12 +62,8 @@ function send(res: ServerResponse, status: number, body = '', headers: Record<st
   res.end(body);
 }
 
-export async function handleMediaRequest(req: IncomingMessage, res: ServerResponse, ctx: MediaContext): Promise<void> {
-  const parsed = parseProxyPath(req.url ?? '');
-  const session = parsed ? ctx.sessions.use(parsed.sessionId) : undefined;
-  // Unknown and expired sessions look identical: nothing to learn by probing ids.
-  if (!parsed || !session) return send(res, 404, 'Not found');
-
+/** Handles OPTIONS/method checks and device binding. Returns false when the response was sent. */
+function admit(req: IncomingMessage, res: ServerResponse, session: MediaSession, ctx: MediaContext): boolean {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       ...CORS_HEADERS,
@@ -64,9 +73,13 @@ export async function handleMediaRequest(req: IncomingMessage, res: ServerRespon
       'access-control-allow-private-network': 'true',
       'access-control-max-age': '600',
     });
-    return void res.end();
+    res.end();
+    return false;
   }
-  if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed', { allow: 'GET, HEAD, OPTIONS' });
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    send(res, 405, 'Method not allowed', { allow: 'GET, HEAD, OPTIONS' });
+    return false;
+  }
 
   // Bind the session to the first client that isn't this computer (the Chromecast); refuse others.
   const client = normalizeRemote(req.socket.remoteAddress);
@@ -74,9 +87,22 @@ export async function handleMediaRequest(req: IncomingMessage, res: ServerRespon
     session.boundClient ??= client;
     if (session.boundClient !== client) {
       ctx.log(`refused ${client}: session is bound to ${session.boundClient}`);
-      return send(res, 403, 'This media session belongs to another device.');
+      send(res, 403, 'This media session belongs to another device.');
+      return false;
     }
   }
+  return true;
+}
+
+export async function handleMediaRequest(req: IncomingMessage, res: ServerResponse, ctx: MediaContext): Promise<void> {
+  const job = JOB_PATH.exec(req.url ?? '');
+  if (job) return handleJobRequest(req, res, ctx, job[1]!, job[2]!);
+
+  const parsed = parseProxyPath(req.url ?? '');
+  const session = parsed ? ctx.sessions.use(parsed.sessionId) : undefined;
+  // Unknown and expired sessions look identical: nothing to learn by probing ids.
+  if (!parsed || !session) return send(res, 404, 'Not found');
+  if (!admit(req, res, session, ctx)) return;
 
   let upstream: URL;
   try {
@@ -285,4 +311,39 @@ async function readAll(stream: Readable, head: Buffer | undefined, limit: number
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Serves FFmpeg output (playlist, segments, subtitles) for a session's transcode job. */
+async function handleJobRequest(req: IncomingMessage, res: ServerResponse, ctx: MediaContext, sessionId: string, name: string): Promise<void> {
+  const session = ctx.sessions.use(sessionId);
+  const job = session ? ctx.jobs?.get(sessionId) : undefined;
+  if (!session || !job) return send(res, 404, 'Not found');
+  if (!admit(req, res, session, ctx)) return;
+
+  const abort = new AbortController();
+  res.on('close', () => abort.abort());
+  session.requests++;
+  try {
+    if (name === 'index.m3u8') {
+      const body = Buffer.from(await job.playlist(abort.signal), 'utf8');
+      res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'application/vnd.apple.mpegurl', 'content-length': String(body.length), 'cache-control': 'no-cache' });
+      res.end(req.method === 'HEAD' ? undefined : body);
+      return;
+    }
+    const subtitle = /^subs-(\d+)\.vtt$/.exec(name);
+    const path = subtitle ? await job.subtitle(Number(subtitle[1]), abort.signal) : await job.segment(name, abort.signal);
+    const type = JOB_TYPES.find(([re]) => re.test(path))?.[1] ?? 'application/octet-stream';
+    const size = statSync(path).size;
+    res.writeHead(200, { ...CORS_HEADERS, 'content-type': type, 'content-length': String(size), 'cache-control': subtitle ? 'no-cache' : 'max-age=3600' });
+    if (req.method === 'HEAD') return void res.end();
+    session.bytesServed += size;
+    await pipeline(createReadStream(path), res);
+  } catch (e) {
+    if (res.destroyed || abort.signal.aborted) return;
+    if (e instanceof JobFileNotFound) return send(res, 404, 'Not found');
+    // A file deleted between the wait and the read (pruned): the receiver simply retries.
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return send(res, 404, 'Not found');
+    ctx.log(`job ${sessionId.slice(0, 6)}…: ${(e as Error).message}`);
+    send(res, 503, (e as Error).message, { 'retry-after': '2' });
+  }
 }
