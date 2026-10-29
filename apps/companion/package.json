@@ -1,0 +1,17 @@
+{
+  "name": "@castit/companion",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Castit local streaming companion: relays authorised media to a Chromecast over the LAN.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "dev": "node --watch src/index.ts"
+  },
+  "dependencies": {
+    "@castit/shared": "*"
+  }
+}

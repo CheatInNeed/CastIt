@@ -1,0 +1,29 @@
+{
+  "name": "castit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:controller": "npm run dev -w @castit/controller",
+    "dev:extension": "npm run dev -w @castit/extension",
+    "dev:testpage": "vite tests/manual --host 127.0.0.1 --port 5174 --strictPort",
+    "build": "npm run build -w @castit/extension && npm run build -w @castit/controller",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p apps/extension && tsc --noEmit -p apps/controller && tsc --noEmit -p apps/companion",
+    "companion": "npm start -w @castit/companion --"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.7",
+    "@types/chromecast-caf-sender": "^1.0.11",
+    "@types/node": "^25.9.9",
+    "happy-dom": "^21.0.4",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.11"
+  }
+}

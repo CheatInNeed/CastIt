@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Castit",
+  "version": "0.3.0",
+  "description": "Cast the actual video stream (never the tab) from web pages to Chromecast and Google Cast devices.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_title": "Castit"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "main-world.js"
+      ],
+      "world": "MAIN",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Open Castit"
+    },
+    "toggle-play": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "Play/pause the Chromecast"
+    }
+  }
+}

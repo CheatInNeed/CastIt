@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Castit manual test page</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 14px/1.45 system-ui, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+      video, iframe { width: 100%; max-width: 640px; aspect-ratio: 16 / 9; background: #000; display: block; margin: 8px 0 8px; border: 0; }
+      .small video { max-width: 240px; }
+      section { margin-bottom: 32px; }
+      code { font-size: 12px; overflow-wrap: anywhere; }
+      .expect { color: #6b7280; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>Castit manual test page</h1>
+    <p>Public test streams, one scenario per section. Play one, then open the Castit popup.
+      Reload the page between scenarios for a clean candidate list.</p>
+
+    <section>
+      <h2>1. Progressive MP4 (plain &lt;video src&gt;, redirected)</h2>
+      <code>archive.org/download/BigBuckBunny_124/…/big_buck_bunny_720p_surround.mp4</code>
+      <video controls preload="metadata"
+        src="https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4"></video>
+      <p class="expect">Expect: one FILE · MP4 · 360p candidate (the archive.org URL, not the dn….archive.org redirect target). It can take a few seconds to load.</p>
+    </section>
+
+    <section>
+      <h2>2. HLS through hls.js (MediaSource / blob:)</h2>
+      <code>test-streams.mux.dev/x36xhzz/x36xhzz.m3u8</code>
+      <video id="hls" controls></video>
+      <p class="expect">Expect: one HLS candidate with "N qualities", 1080p, H.264. Variant playlists are hidden after the popup inspects the master.</p>
+    </section>
+
+    <section>
+      <h2>3. DASH through dash.js (MediaSource / blob:)</h2>
+      <code>dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd</code>
+      <video id="dash" controls></video>
+      <p class="expect">Expect: one DASH candidate, 1080p, linked to the playing blob: player.</p>
+    </section>
+
+    <section>
+      <h2>4. Cross-origin embedded player (iframe on 127.0.0.1, delayed init)</h2>
+      <p class="expect">The iframe is a different origin than this page. Its player only creates the stream when you press its play button.</p>
+      <iframe id="embed" allow="autoplay; fullscreen" title="Embedded player"></iframe>
+      <p class="expect">Expect: HLS candidate shown as "… · in player 127.0.0.1" and associated with the iframe's MediaSource player.</p>
+    </section>
+
+    <section>
+      <h2>5. Dynamically inserted player</h2>
+      <button id="insert">Insert player in 1.5 s</button>
+      <div id="dynamic"></div>
+      <p class="expect">Expect: the Sintel MP4 appears in the popup without reopening it.</p>
+    </section>
+
+    <section>
+      <h2>6. Player inside a closed shadow root</h2>
+      <closed-player src="https://media.w3.org/2010/05/sintel/trailer_hd.mp4"></closed-player>
+      <p class="expect">Expect: the Sintel trailer is detected even though the page cannot see into the closed shadow root.</p>
+    </section>
+
+    <section class="small">
+      <h2>7. Short "ad-like" clip in a small player</h2>
+      <video controls preload="metadata"
+        src="https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4"></video>
+      <p class="expect">Expect: ranked below the real content (short clip, small player, tiny file).</p>
+    </section>
+
+    <section class="small">
+      <h2>8. Broken source (HTTP 403)</h2>
+      <video controls preload="metadata"
+        src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"></video>
+      <p class="expect">Expect: listed as "Unlikely": the page's own player could not load it (HTTP 403). Never pre-selected.</p>
+    </section>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js"></script>
+    <script>
+      const hlsEl = document.getElementById('hls');
+      if (window.Hls && Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8');
+        hls.attachMedia(hlsEl);
+      }
+
+      if (window.dashjs) {
+        const player = dashjs.MediaPlayer().create();
+        player.initialize(document.getElementById('dash'), 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd', false);
+      }
+
+      // Cross-origin: same dev server, other hostname (localhost vs 127.0.0.1).
+      const embedHost = location.hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1';
+      document.getElementById('embed').src = `${location.protocol}//${embedHost}:${location.port}/embed.html`;
+
+      document.getElementById('insert').addEventListener('click', () => {
+        setTimeout(() => {
+          const v = document.createElement('video');
+          v.controls = true;
+          v.src = 'https://archive.org/download/Sintel/sintel-2048-surround.mp4';
+          document.getElementById('dynamic').appendChild(v);
+          v.play().catch(() => {});
+        }, 1500);
+      });
+
+      customElements.define('closed-player', class extends HTMLElement {
+        connectedCallback() {
+          const root = this.attachShadow({ mode: 'closed' });
+          const v = document.createElement('video');
+          v.controls = true;
+          v.preload = 'metadata';
+          v.style.cssText = 'width:100%;max-width:640px;aspect-ratio:16/9;background:#000';
+          v.src = this.getAttribute('src');
+          root.appendChild(v);
+        }
+      });
+    </script>
+  </body>
+</html>
