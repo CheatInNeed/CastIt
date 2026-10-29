@@ -105,6 +105,7 @@ async function main(): Promise<void> {
       bridge?.send(
         error ? { type: 'controller/load-result', requestId, ok: false, error } : { type: 'controller/load-result', requestId, ok: true },
       ),
+    playbackProblem: (requestId, error, position) => bridge?.send({ type: 'controller/playback-problem', requestId, error, position }),
   });
 
   bridge = new ExtensionBridge(

@@ -1,14 +1,31 @@
 // Cast session management, media loading and playback verification (Default Media Receiver).
 import type { CastError, CastPhase, CastRequest, CastStatus, RemoteCommand } from '@castit/shared';
-import { decodeEntities, loadError, midPlaybackError, PLAYBACK_TIMEOUT, sessionError } from './errors.ts';
+import {
+  decodeEntities,
+  loadError,
+  midPlaybackError,
+  PLAYBACK_TIMEOUT,
+  sessionError,
+  STALLED,
+  withReceiverDetail,
+  type ReceiverError,
+} from './errors.ts';
 import { Remote } from './remote.ts';
 
 const VERIFY_TIMEOUT_MS = 30_000;
+/** After playback is verified, watch this long for freezes (broken segments, throttled relays…). */
+const WATCH_MS = 120_000;
+const STALL_MS = 20_000;
+/** Receiver errors older than this are not attributed to a new failure. */
+const RECEIVER_ERROR_TTL_MS = 30_000;
+const MEDIA_NAMESPACE = 'urn:x-cast:com.google.cast.media';
 const TIME_UPDATE_INTERVAL_MS = 1000;
 
 export interface CastEvents {
   status(status: CastStatus): void;
   loadResult(requestId: string, error?: CastError): void;
+  /** Playback failed or froze after it had been verified (position in seconds). */
+  playbackProblem(requestId: string, error: CastError, position: number): void;
 }
 
 /** MediaInfo fields that exist in the SDK but are missing from @types/chromecast-caf-sender. */
@@ -64,6 +81,16 @@ export class CastController {
   private error: CastError | undefined;
   private verify: { requestId: string; timer: ReturnType<typeof setTimeout> } | null = null;
   private lastTimeEmit = 0;
+  private receiverError: ReceiverError | undefined;
+  private listenedSession: cast.framework.CastSession | null = null;
+  private watch: {
+    requestId: string;
+    startedAt: number;
+    lastProgressAt: number;
+    lastTime: number;
+    reported: boolean;
+    timer: ReturnType<typeof setInterval>;
+  } | null = null;
 
   constructor(private readonly events: CastEvents) {}
 
@@ -125,7 +152,10 @@ export class CastController {
 
   execute(command: RemoteCommand): CastError | null {
     const result = this.remote.execute(command);
-    if (command.type === 'stop' || command.type === 'disconnect') this.clearVerification();
+    if (command.type === 'stop' || command.type === 'disconnect') {
+      this.clearVerification();
+      this.stopWatching();
+    }
     this.emit();
     return result;
   }
@@ -136,6 +166,7 @@ export class CastController {
       case S.SESSION_STARTED:
       case S.SESSION_RESUMED:
         this.override = null;
+        this.listenForReceiverErrors(e.session);
         if (this.pending) void this.loadPending();
         break;
       case S.SESSION_START_FAILED:
@@ -144,6 +175,8 @@ export class CastController {
         break;
       case S.SESSION_ENDED:
         this.clearVerification();
+        this.stopWatching();
+        this.listenedSession = null;
         this.current = null;
         this.override = this.pending ? 'awaiting-device' : null;
         break;
@@ -161,6 +194,9 @@ export class CastController {
     this.override = 'loading';
     this.emit();
 
+    this.stopWatching();
+    this.receiverError = undefined;
+    this.listenForReceiverErrors(session);
     let code: unknown;
     try {
       code = await session.loadMedia(buildLoadRequest(req));
@@ -169,7 +205,7 @@ export class CastController {
     }
     this.loading = false;
     if (code) {
-      this.fail(req.requestId, loadError(code));
+      this.fail(req.requestId, this.refine(loadError(code)));
       return;
     }
     // loadMedia resolving only means the receiver accepted the request; wait for real playback.
@@ -190,12 +226,87 @@ export class CastController {
         const { requestId } = this.verify;
         this.clearVerification();
         this.events.loadResult(requestId);
+        this.startWatching(requestId);
       } else if (phase === 'error') {
-        this.fail(this.verify.requestId, loadError('load_media_failed'));
+        this.fail(this.verify.requestId, this.refine(loadError('load_media_failed')));
       }
     } else if (phase === 'error' && this.current && !this.error) {
-      this.error = midPlaybackError();
+      this.error = this.refine(midPlaybackError());
+      this.reportProblem(this.error);
     }
+  }
+
+  /** Receiver error messages on the media channel carry a DetailedErrorCode; keep the latest. */
+  private listenForReceiverErrors(session: cast.framework.CastSession | null): void {
+    if (!session || this.listenedSession === session) return;
+    this.listenedSession = session;
+    try {
+      session.addMessageListener(MEDIA_NAMESPACE, (_ns, message) => {
+        try {
+          const data = JSON.parse(message) as { type?: string; detailedErrorCode?: number; reason?: string };
+          if (typeof data.detailedErrorCode === 'number' && /ERROR|FAILED|INVALID/.test(data.type ?? '')) {
+            this.receiverError = { detailedErrorCode: data.detailedErrorCode, reason: data.reason, at: Date.now() };
+          }
+        } catch {
+          /* not JSON: ignore */
+        }
+      });
+    } catch {
+      // Some SDK versions keep the media namespace to themselves; errors then stay generic.
+    }
+  }
+
+  private refine(error: CastError): CastError {
+    const recent = this.receiverError && Date.now() - this.receiverError.at < RECEIVER_ERROR_TTL_MS ? this.receiverError : undefined;
+    return withReceiverDetail(error, recent);
+  }
+
+  /** Watches the first minutes of verified playback for freezes the receiver doesn't report. */
+  private startWatching(requestId: string): void {
+    this.stopWatching();
+    const now = Date.now();
+    this.watch = {
+      requestId,
+      startedAt: now,
+      lastProgressAt: now,
+      lastTime: this.remote.player.currentTime,
+      reported: false,
+      timer: setInterval(() => this.checkStall(), 2000),
+    };
+  }
+
+  private stopWatching(): void {
+    if (this.watch) clearInterval(this.watch.timer);
+    this.watch = null;
+  }
+
+  private checkStall(): void {
+    const w = this.watch;
+    if (!w) return;
+    const now = Date.now();
+    if (now - w.startedAt > WATCH_MS || this.current?.requestId !== w.requestId) return this.stopWatching();
+    const phase = this.remote.phase(this.idleReason());
+    const time = this.remote.player.currentTime;
+    if (phase === 'paused' || time > w.lastTime + 0.25) {
+      // Paused on purpose, or progressing: both reset the clock.
+      w.lastProgressAt = now;
+      w.lastTime = time;
+      return;
+    }
+    if ((phase === 'playing' || phase === 'buffering') && now - w.lastProgressAt > STALL_MS) {
+      this.reportProblem(this.refine(STALLED));
+    }
+  }
+
+  private reportProblem(error: CastError): void {
+    const requestId = this.current?.requestId;
+    if (!requestId) return;
+    if (this.watch?.requestId === requestId) {
+      if (this.watch.reported) return;
+      this.watch.reported = true;
+    }
+    this.events.playbackProblem(requestId, error, Math.floor(this.remote.player.currentTime || 0));
+    this.stopWatching();
   }
 
   private fail(requestId: string, error: CastError): void {

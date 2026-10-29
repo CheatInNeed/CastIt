@@ -394,3 +394,26 @@ button.pill {
   font-size: 11px;
   color: var(--warn);
 }
+
+.steps {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  margin: 2px 0 8px;
+}
+
+.steps .ok {
+  color: var(--ok);
+}
+
+.steps .bad {
+  color: var(--bad);
+}
+
+.steps .busy {
+  color: var(--warn);
+}
+
+.actions {
+  gap: 14px;
+}

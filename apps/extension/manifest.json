@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Castit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Cast the actual video stream (never the tab) from web pages to Chromecast and Google Cast devices.",
   "minimum_chrome_version": "116",
   "permissions": [

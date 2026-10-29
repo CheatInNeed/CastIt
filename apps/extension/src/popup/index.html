@@ -61,6 +61,18 @@
     <div id="notice" class="notice" role="status" hidden></div>
     <div id="error" class="error" role="alert" hidden></div>
 
+    <section id="progress" class="card" hidden>
+      <div class="row between">
+        <div class="eyebrow">What Castit tried</div>
+        <span id="progress-state" class="pill small"></span>
+      </div>
+      <div id="progress-list" class="steps"></div>
+      <div class="row actions">
+        <button id="stop-trying" class="link small" hidden>Stop trying</button>
+        <button id="copy-diag" class="link small">Copy diagnostics</button>
+      </div>
+    </section>
+
     <details id="companion" class="card">
       <summary class="row between">
         <span class="eyebrow inline">Local companion</span>
@@ -105,8 +117,11 @@
     </details>
 
     <footer class="footer">
-      <button id="open-controller" class="link">Open controller</button>
-      <span class="muted">Casts the stream itself, never the tab.</span>
+      <span>
+        <button id="open-controller" class="link">Open controller</button> ·
+        <button id="copy-diag-footer" class="link">Copy diagnostics</button>
+      </span>
+      <span class="muted">Never mirrors the tab.</span>
     </footer>
 
     <script type="module" src="./popup.ts"></script>

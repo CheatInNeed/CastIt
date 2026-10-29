@@ -107,6 +107,8 @@ export interface PopupState {
   castingCandidateId?: string;
   /** Build id of the running background worker (compared with the popup's own). */
   buildId: string;
+  /** What Castit tried for the latest cast from this tab. */
+  progress?: CastProgress;
 }
 
 export type PopupRequest =
@@ -118,10 +120,20 @@ export type PopupRequest =
   | { type: 'popup/companion-forget' }
   | { type: 'popup/set-engine'; mode: EngineMode }
   | { type: 'popup/set-transcode'; settings: TranscodeSettings }
+  | { type: 'popup/cast-cancel' }
+  /** Plain-text report of the latest cast (query strings removed), for bug reports. */
+  | { type: 'popup/diagnostics'; tabId: number }
   /** Outline a page video while the user hovers its row (videoKey null = clear). */
   | { type: 'popup/highlight'; tabId: number; frameId: number; videoKey: string | null };
 
 export type HighlightResult = 'shown' | 'not-found' | 'unreachable';
+
+export interface CastProgress {
+  state: 'running' | 'playing' | 'failed' | 'cancelled';
+  /** One line per attempt, e.g. "2. Through the local companion: playing ✓". */
+  lines: string[];
+  final?: CastError;
+}
 
 export type CompanionPairResult = { ok: true; status: CompanionStatus } | { ok: false; error: string };
 
@@ -137,7 +149,9 @@ export type ControllerToBackground =
   | { type: 'controller/hello'; token: string; version: number }
   | { type: 'controller/status'; status: CastStatus }
   | { type: 'controller/load-result'; requestId: string; ok: true }
-  | { type: 'controller/load-result'; requestId: string; ok: false; error: CastError };
+  | { type: 'controller/load-result'; requestId: string; ok: false; error: CastError }
+  /** Playback broke or froze after it had started (position in seconds, for resuming). */
+  | { type: 'controller/playback-problem'; requestId: string; error: CastError; position: number };
 
 export type BackgroundToController =
   | { type: 'controller/welcome'; pending: CastRequest | null }

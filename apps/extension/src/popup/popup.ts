@@ -3,6 +3,7 @@ import {
   type CompanionPairResult,
   type CompanionStatus,
   type EngineMode,
+  type CastProgress,
   type HighlightResult,
   type TranscodeSettings,
   PHASE_LABELS,
@@ -52,6 +53,7 @@ function render(): void {
     () => renderSync(s),
     () => renderCompanion(s.companion, s.engineMode, s.transcodeSettings),
     () => renderNotice(s.notice),
+    () => renderProgress(s.progress),
   ];
   for (const part of parts) {
     try {
@@ -74,6 +76,44 @@ function renderSync(s: PopupState): void {
     sync.state === 'active'
       ? `The page’s own player is your remote${sync.frameHost ? ` (player on ${sync.frameHost})` : ''}: play, pause and seek there.`
       : (sync.reason ?? '');
+}
+
+const PROGRESS_LABEL: Record<CastProgress['state'], string> = {
+  running: 'Trying…',
+  playing: 'Playing',
+  failed: 'Failed',
+  cancelled: 'Stopped',
+};
+
+/** Shown when something went wrong or more than one way was needed. */
+function renderProgress(progress: CastProgress | undefined): void {
+  const card = $('progress');
+  card.hidden = !progress || (progress.state === 'playing' && progress.lines.length <= 1);
+  if (!progress || card.hidden) return;
+  const pill = $('progress-state');
+  pill.textContent = PROGRESS_LABEL[progress.state];
+  pill.className = `pill small ${progress.state === 'playing' ? 'on' : progress.state === 'running' ? 'warn' : ''}`;
+  $('progress-list').replaceChildren(
+    ...progress.lines.map((line) => {
+      const div = document.createElement('div');
+      div.textContent = line;
+      div.className = line.endsWith('✓') ? 'ok' : line.endsWith('trying…') ? 'busy' : 'bad';
+      return div;
+    }),
+  );
+  $('stop-trying').hidden = progress.state !== 'running';
+}
+
+async function copyDiagnostics(button: HTMLElement): Promise<void> {
+  const report = await send<string>({ type: 'popup/diagnostics', tabId });
+  const label = button.textContent;
+  try {
+    await navigator.clipboard.writeText(report);
+    button.textContent = 'Copied ✓';
+  } catch {
+    button.textContent = 'Copy failed';
+  }
+  setTimeout(() => (button.textContent = label), 1500);
 }
 
 function renderNotice(notice: string | null): void {
@@ -324,7 +364,15 @@ function renderNow(status: CastStatus | null): void {
 
   $('now-device').textContent =
     (status.deviceName ? ` · ${status.deviceName}` : '') +
-    (status.engine === 'companion' ? ' · via companion' : status.engine === 'transcode' ? ' · converted' : '');
+    (status.engine === 'companion'
+      ? ' · via companion'
+      : status.engine === 'transcode'
+        ? status.plan?.action === 'remux'
+          ? ' · repackaged'
+          : status.plan?.action === 'transcode'
+            ? ' · converted'
+            : ' · via companion'
+        : '');
   const plan = $('now-plan');
   plan.hidden = !status.plan?.details.length || status.plan.action === 'direct';
   plan.textContent = status.plan ? status.plan.details.join(' · ') : '';
@@ -394,6 +442,12 @@ function wire(): void {
 
   $('open-controller').addEventListener('click', () => void send({ type: 'popup/open-controller' }));
   $('reload-ext').addEventListener('click', () => chrome.runtime.reload());
+  $('copy-diag').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
+  $('copy-diag-footer').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
+  $('stop-trying').addEventListener('click', async () => {
+    await send({ type: 'popup/cast-cancel' });
+    await refresh();
+  });
   $('companion-pill').addEventListener('click', () => {
     const details = $<HTMLDetailsElement>('companion');
     details.open = true;
@@ -452,6 +506,7 @@ function wire(): void {
       renderNow(state.castStatus);
     }
     if (changes.syncTarget && state) void refresh();
+    if (changes.castContext && state) void refresh();
     if (changes.castNotice && state) {
       state.notice = (changes.castNotice.newValue as string | undefined) ?? null;
       renderNotice(state.notice);

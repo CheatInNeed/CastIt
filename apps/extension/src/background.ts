@@ -11,9 +11,11 @@ import {
   type BackgroundToContent,
   type BackgroundToController,
   type CandidateView,
+  type CastabilityAssessment,
   type CastError,
   type CastRequest,
   type CastEngine,
+  type CastProgress,
   type CastStatus,
   type CommandResponse,
   type CompanionPairResult,
@@ -44,7 +46,18 @@ import {
   saveCompanionConfig,
   type CompanionConfig,
 } from './lib/companion.ts';
-import { chooseEngine, nextEngine, upstreamContextFor, withCompanion } from './lib/engine.ts';
+import { upstreamContextFor, withCompanion } from './lib/engine.ts';
+import {
+  alternativesFor,
+  attemptLabel,
+  describeAttempts,
+  firstStep,
+  newStrategy,
+  nextStep,
+  type AttemptRecord,
+  type Step,
+  type StrategyState,
+} from './lib/strategy.ts';
 import { routeStatus, type SyncTarget } from './lib/sync-routing.ts';
 import { classifyMedia, normalizeMime, totalSizeFromHeaders } from './lib/media-types.ts';
 import { dedupeKey } from './lib/media-types.ts';
@@ -78,15 +91,29 @@ const KEY = {
 } as const;
 
 const DEFAULT_TRANSCODE: TranscodeSettings = { profile: 'compat', quality: 'auto' };
+/** Within this time after an attempt started, a playback failure switches engine automatically. */
+const RECOVERY_WINDOW_MS = 3 * 60_000;
 
-/** What the background needs to retry a cast through another engine. */
-interface CastContext {
-  direct: CastRequest;
+/** What one stream needs for (re)building load requests, so retries don't re-probe. */
+interface CastInput {
+  candidateId: string;
+  label: string;
   kind: StreamKind;
+  direct: CastRequest;
   upstream: UpstreamContext;
-  mode: EngineMode;
-  tried: CastEngine[];
+  assessment: CastabilityAssessment;
+}
+
+/** One cast from the popup: the strategy's progress plus what is needed to continue it. */
+interface CastContext {
+  tabId: number;
+  strategy: StrategyState;
+  inputs: Record<string, CastInput>;
   activeRequestId: string;
+  activeCandidateId: string;
+  /** Position to resume at when switching engine after playback had started. */
+  resumeAt?: number;
+  startedAt: number;
   /** The page player that should become the remote control once the TV plays. */
   sync: { tabId: number; frameId?: number; videoKey?: string; frameHost?: string };
 }
@@ -338,13 +365,17 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       case 'controller/status':
         await onControllerStatus(raw.status);
         break;
+      case 'controller/playback-problem':
+        await onPlaybackProblem(raw.requestId, raw.error, raw.position);
+        break;
       case 'controller/load-result': {
         const pending = (await chrome.storage.session.get(KEY.pendingCast))[KEY.pendingCast] as CastRequest | undefined;
         if (pending?.requestId === raw.requestId) await chrome.storage.session.remove(KEY.pendingCast);
         if (!raw.ok) {
-          await fallBackToCompanion(raw.requestId, raw.error);
+          await onAttemptFailed(raw.requestId, raw.error);
           break;
         }
+        await onAttemptPlaying(raw.requestId);
         await chrome.storage.session.remove(KEY.castNotice);
         // The TV is playing: turn the page's player into a remote (this also pauses it).
         await startSync(raw.requestId, pending);
@@ -440,6 +471,7 @@ async function popupState(tabId: number): Promise<PopupState> {
       tabId,
     ),
     buildId: __BUILD_ID__,
+    progress: progressFor(await castContext(), tabId),
   };
 }
 
@@ -451,66 +483,156 @@ async function castCandidate(tabId: number, candidateId: string): Promise<PopupC
   await new Promise((r) => setTimeout(r, 250));
 
   const state = await readTab(tabId);
-  const candidate = rankCandidates(state).find((c) => c.id === candidateId);
-  if (!candidate) {
+  const ranked = rankCandidates(state);
+  const chosen = ranked.find((c) => c.id === candidateId);
+  if (!chosen) {
     return { ok: false, error: err('NO_VIDEO', 'That stream is no longer detected. Play the video again and reopen Castit.') };
   }
+
+  const [mode, comp] = await Promise.all([engineMode(), companion()]);
+  const streams = [chosen, ...alternativesFor(chosen, ranked)];
+  const playerFrame = chosen.videoFrameId ?? chosen.frameId;
+  const context: CastContext = {
+    tabId,
+    strategy: newStrategy(mode, streams.map((c) => ({ id: c.id, label: c.label }))),
+    inputs: {},
+    activeRequestId: '',
+    activeCandidateId: chosen.id,
+    startedAt: Date.now(),
+    sync: {
+      tabId,
+      frameId: playerFrame,
+      videoKey: chosen.video?.key,
+      frameHost: playerFrame !== 0 ? new URL(frameUrl(state, playerFrame) ?? 'about:blank').hostname || undefined : undefined,
+    },
+  };
+  // The chosen stream is probed up front: DRM, expiry and codecs decide the first engine.
+  await ensureInput(context, chosen.id);
+  await chrome.storage.session.remove(KEY.castNotice);
+  const assess = await assessor(context);
+  return runSteps(context, firstStep(context.strategy, assess, comp), comp);
+}
+
+/** Probes a stream (once per cast) and prepares its direct load request and upstream context. */
+async function ensureInput(context: CastContext, candidateId: string): Promise<CastInput | undefined> {
+  const existing = context.inputs[candidateId];
+  if (existing) return existing;
+  const state = await readTab(context.tabId);
+  const candidate = rankCandidates(state).find((c) => c.id === candidateId);
+  if (!candidate) return undefined;
 
   const probe = await probeStream(candidate);
   if (candidate.kind === 'hls' || candidate.kind === 'dash') {
     const summary = summarizeManifest(candidate.kind, probe, Date.now());
-    void updateTab(tabId, (s) => recordManifest(s, candidate.id, summary));
+    void updateTab(context.tabId, (s) => recordManifest(s, candidate.id, summary));
   }
-  const assessment = assessCastability(candidate, probe);
-  // Expired URLs, DRM, …: no engine helps. Unsupported containers are FFmpeg's job (chooseEngine).
-  if (assessment.blocker && assessment.blocker.code !== 'UNSUPPORTED_CONTAINER') return { ok: false, error: assessment.blocker };
-
-  const [mode, comp] = await Promise.all([engineMode(), companion()]);
-  const choice = chooseEngine(mode, assessment, comp);
-  if ('error' in choice) return { ok: false, error: choice.error };
-
-  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
-  const direct = buildCastRequest(candidate, probe, { title: tab?.title, url: tab?.url }, crypto.randomUUID(), tabId);
-  const upstream = upstreamContextFor(
-    candidate,
-    frameUrl(state, candidate.frameId) ?? tab?.url,
-    state.candidates[candidate.id]?.initiator,
-    navigator.userAgent,
-  );
-
-  let request = direct;
-  let engine: CastEngine = choice.engine;
-  if (choice.engine !== 'direct') {
-    const force = mode === 'transcode' || assessment.blocker?.code === 'UNSUPPORTED_CONTAINER';
-    const relayed = await relayViaCompanion(comp.config, direct, candidate.kind, upstream, choice.engine === 'transcode' ? force : undefined);
-    if (!('requestId' in relayed)) return { ok: false, error: relayed };
-    request = relayed;
-    engine = relayed.engine;
-  } else {
-    await replaceCompanionSession(comp.config, null);
-  }
-
-  const playerFrame = candidate.videoFrameId ?? candidate.frameId;
-  const context: CastContext = {
-    direct,
+  const tab = await chrome.tabs.get(context.tabId).catch(() => undefined);
+  const input: CastInput = {
+    candidateId,
+    label: candidate.label,
     kind: candidate.kind,
-    upstream,
-    mode,
-    tried: [engine],
-    activeRequestId: request.requestId,
-    sync: {
-      tabId,
-      frameId: playerFrame,
-      videoKey: candidate.video?.key,
-      frameHost: playerFrame !== 0 ? new URL(frameUrl(state, playerFrame) ?? 'about:blank').hostname || undefined : undefined,
-    },
+    direct: buildCastRequest(candidate, probe, { title: tab?.title, url: tab?.url }, crypto.randomUUID(), context.tabId),
+    upstream: upstreamContextFor(candidate, frameUrl(state, candidate.frameId) ?? tab?.url, state.candidates[candidate.id]?.initiator, navigator.userAgent),
+    assessment: assessCastability(candidate, probe),
   };
-  await chrome.storage.session.set({ [KEY.pendingCast]: request, [KEY.castContext]: context });
-  await chrome.storage.session.remove(KEY.castNotice);
+  context.inputs[candidateId] = input;
+  return input;
+}
 
-  if (postToController({ type: 'controller/load', request })) return { ok: true, controller: 'loading' };
-  await openController();
-  return { ok: true, controller: 'opened' };
+/** Assessment per stream for the strategy: probed when known, URL/page evidence otherwise. */
+async function assessor(context: CastContext): Promise<(id: string) => CastabilityAssessment> {
+  const ranked = rankCandidates(await readTab(context.tabId));
+  return (id) => {
+    const known = context.inputs[id]?.assessment;
+    if (known) return known;
+    const candidate = ranked.find((c) => c.id === id);
+    return candidate
+      ? assessCastability(candidate)
+      : { level: 'unsupported', engine: null, notes: [], blocker: err('NO_VIDEO', 'The stream is no longer detected.') };
+  };
+}
+
+async function saveContext(context: CastContext): Promise<void> {
+  await chrome.storage.session.set({ [KEY.castContext]: context });
+}
+
+/**
+ * Executes strategy steps until one is handed to the Chromecast (its result arrives later via
+ * the controller) or the strategy gives up. Failures that happen before the receiver is involved
+ * (companion refused, stream blocked) advance the strategy right here.
+ */
+async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnType<typeof companion>>): Promise<PopupCastResponse> {
+  for (;;) {
+    if (context.strategy.state === 'cancelled') return { ok: false, error: err('SESSION_CANCELLED', 'Stopped.') };
+    if (step.kind === 'give-up') {
+      context.strategy.state = 'failed';
+      context.strategy.final = step.error;
+      await saveContext(context);
+      if (context.strategy.attempts.length > 0) {
+        await chrome.storage.session.set({ [KEY.castNotice]: step.error.message });
+      }
+      return { ok: false, error: step.error };
+    }
+
+    const current = step;
+    const input = await ensureInput(context, current.candidateId);
+    const assess = await assessor(context);
+    const fail = async (error: CastError, engine: CastEngine) => {
+      context.strategy.attempts.push({
+        candidateId: current.candidateId,
+        label: input?.label ?? current.candidateId,
+        engine,
+        outcome: 'failed',
+        error,
+        startedAt: Date.now(),
+        endedAt: Date.now(),
+      });
+      return nextStep(context.strategy, error, assess, comp);
+    };
+    if (!input) {
+      step = await fail(err('NO_VIDEO', 'The stream is no longer detected.'), step.engine);
+      continue;
+    }
+    if (input.assessment.blocker && input.assessment.blocker.code !== 'UNSUPPORTED_CONTAINER') {
+      step = await fail(input.assessment.blocker, step.engine);
+      continue;
+    }
+
+    const base: CastRequest = { ...input.direct, requestId: crypto.randomUUID(), startTime: context.resumeAt ?? input.direct.startTime };
+    let request = base;
+    let delivery: AttemptRecord['delivery'];
+    if (step.engine !== 'direct') {
+      const relayed = await relayViaCompanion(comp.config, base, input.kind, input.upstream, step.engine === 'transcode' ? step.force : undefined);
+      if (!('requestId' in relayed)) {
+        step = await fail(relayed, step.engine);
+        continue;
+      }
+      request = relayed;
+      if (step.engine === 'transcode') delivery = relayed.plan && relayed.plan.action !== 'direct' ? relayed.plan.action : 'relay';
+    } else {
+      await replaceCompanionSession(comp.config, null);
+    }
+
+    context.strategy.attempts.push({
+      candidateId: step.candidateId,
+      label: input.label,
+      engine: step.engine,
+      delivery,
+      outcome: 'running',
+      startedAt: Date.now(),
+    });
+    context.activeRequestId = request.requestId;
+    context.activeCandidateId = step.candidateId;
+    await saveContext(context);
+    await chrome.storage.session.set({ [KEY.pendingCast]: request });
+    if (context.strategy.attempts.length > 1) {
+      await chrome.storage.session.set({ [KEY.castNotice]: `Trying: ${attemptLabel(context.strategy.attempts.at(-1)!)}…` });
+    }
+
+    if (postToController({ type: 'controller/load', request })) return { ok: true, controller: 'loading' };
+    await openController();
+    return { ok: true, controller: 'opened' };
+  }
 }
 
 /**
@@ -582,29 +704,113 @@ async function replaceCompanionSession(config: CompanionConfig, sessionId: strin
   else await chrome.storage.session.remove(KEY.companionSession);
 }
 
-const ENGINE_LABEL: Record<CastEngine, string> = { direct: 'Direct casting', companion: 'Relaying', transcode: 'Converting' };
-
-/** The receiver failed: step down the ladder (direct → companion → FFmpeg) when that can help. */
-async function fallBackToCompanion(requestId: string, error: CastError): Promise<void> {
-  const context = (await chrome.storage.session.get(KEY.castContext))[KEY.castContext] as CastContext | undefined;
-  if (!context || context.activeRequestId !== requestId) return;
+/** The receiver failed to start this attempt: let the strategy choose the next one. */
+async function onAttemptFailed(requestId: string, error: CastError): Promise<void> {
+  const context = await castContext();
+  if (!context || context.activeRequestId !== requestId || context.strategy.state !== 'running') return;
+  const attempt = context.strategy.attempts.at(-1);
+  if (attempt) Object.assign(attempt, { outcome: 'failed', error, endedAt: Date.now() });
   const comp = await companion();
-  const next = nextEngine(context.mode, context.tried, error, comp);
-  if (!next) return;
+  const step = nextStep(context.strategy, error, await assessor(context), comp);
+  if (step.kind === 'attempt') {
+    await chrome.storage.session.set({ [KEY.castNotice]: `${attempt ? attemptLabel(attempt) : 'Casting'} failed: ${error.message} Trying another way…` });
+  }
+  await runSteps(context, step, comp);
+}
 
-  const failed = ENGINE_LABEL[context.tried.at(-1) ?? 'direct'];
-  const action = next.engine === 'transcode' ? 'Letting the local companion check and convert the stream' : 'Retrying through the local companion';
-  await chrome.storage.session.set({ [KEY.castNotice]: `${failed} failed (${error.message}). ${action}…` });
-  const relayed = await relayViaCompanion(comp.config, context.direct, context.kind, context.upstream, next.engine === 'transcode' ? next.force : undefined);
-  if (!('requestId' in relayed)) {
-    await chrome.storage.session.set({ [KEY.castNotice]: `${failed} failed, and the companion could not help: ${relayed.message}` });
+/** The receiver verified playback. */
+async function onAttemptPlaying(requestId: string): Promise<boolean> {
+  const context = await castContext();
+  if (!context || context.activeRequestId !== requestId) return false;
+  const attempt = context.strategy.attempts.at(-1);
+  if (attempt) Object.assign(attempt, { outcome: 'playing', endedAt: Date.now() });
+  context.strategy.state = 'playing';
+  context.resumeAt = undefined;
+  await saveContext(context);
+  return true;
+}
+
+/** Playback broke or froze after it started. Early on, switch engine and resume at the same spot. */
+async function onPlaybackProblem(requestId: string, error: CastError, position: number): Promise<void> {
+  const context = await castContext();
+  if (!context || context.activeRequestId !== requestId) return;
+  const attempt = context.strategy.attempts.at(-1);
+  const early = !!attempt && Date.now() - attempt.startedAt < RECOVERY_WINDOW_MS;
+  if (context.strategy.mode !== 'auto' || !early) {
+    await chrome.storage.session.set({ [KEY.castNotice]: `Problem on the TV: ${error.message} Cast again from the popup to retry.` });
     return;
   }
-  // An analysis that found nothing to convert relays the stream unchanged.
-  context.tried.push(relayed.engine);
-  context.activeRequestId = relayed.requestId;
-  await chrome.storage.session.set({ [KEY.pendingCast]: relayed, [KEY.castContext]: context });
-  if (!postToController({ type: 'controller/load', request: relayed })) await openController();
+  if (attempt) Object.assign(attempt, { outcome: 'failed', error, endedAt: Date.now() });
+  context.strategy.state = 'running';
+  context.resumeAt = position > 0 ? position : undefined;
+  const comp = await companion();
+  const step = nextStep(context.strategy, error, await assessor(context), comp);
+  if (step.kind === 'give-up') {
+    context.strategy.state = 'failed';
+    context.strategy.final = step.error;
+    await saveContext(context);
+    await chrome.storage.session.set({ [KEY.castNotice]: `Problem on the TV: ${error.message}` });
+    return;
+  }
+  await chrome.storage.session.set({ [KEY.castNotice]: `${error.message} Switching to another way and resuming…` });
+  await runSteps(context, step, comp);
+}
+
+async function cancelCast(): Promise<void> {
+  const context = await castContext();
+  if (!context || context.strategy.state !== 'running') return;
+  context.strategy.state = 'cancelled';
+  await saveContext(context);
+  await chrome.storage.session.set({ [KEY.castNotice]: 'Stopped trying.' });
+  sendCommand({ type: 'stop' });
+}
+
+function progressFor(context: CastContext | undefined, tabId: number): CastProgress | undefined {
+  if (!context || context.tabId !== tabId || context.strategy.attempts.length === 0) return undefined;
+  return { state: context.strategy.state, lines: describeAttempts(context.strategy), final: context.strategy.final };
+}
+
+/** Plain-text report for bug reports. Query strings (often signatures) are removed everywhere. */
+async function diagnosticsReport(tabId: number): Promise<string> {
+  const strip = (url: string | undefined) => (url ? url.split('#')[0]!.replace(/\?.*$/, '?…') : '–');
+  const [context, comp, mode, tab, session, state] = await Promise.all([
+    castContext(),
+    companion(),
+    engineMode(),
+    chrome.tabs.get(tabId).catch(() => undefined),
+    chrome.storage.session.get(KEY.castStatus),
+    readTab(tabId),
+  ]);
+  const status = session[KEY.castStatus] as CastStatus | undefined;
+  const lines = [
+    `Castit diagnostics · ${new Date().toISOString()}`,
+    `Extension ${chrome.runtime.getManifest().version} (build ${__BUILD_ID__}) · ${navigator.userAgent}`,
+    `Page: ${strip(tab?.url)}`,
+    `Casting method: ${mode} · Companion: ${comp.status.state}${comp.status.state === 'paired' ? ` (FFmpeg: ${comp.status.ffmpeg ? (comp.status.hwEncoder ?? 'software') : 'no'})` : ''}`,
+    `Receiver: ${status?.deviceName ?? '–'} · ${status?.phase ?? 'no status'}${status?.engine ? ` · ${status.engine}` : ''}${status?.error ? ` · ${status.error.code}: ${status.error.message}` : ''}`,
+    '',
+    'Detected streams:',
+    ...rankCandidates(state).slice(0, 12).map((c) => {
+      const a = assessCastability(c, undefined);
+      return `- ${c.label} [${c.kind}${c.quality ? ` ${c.quality}` : ''}] ${strip(c.url)} · ${a.level}${c.video ? ` · player ${c.video.key}${c.embedded ? ` in ${c.frameHost}` : ''}` : ''}${c.isAd ? ' · ad' : ''}`;
+    }),
+  ];
+  if (context?.tabId === tabId) {
+    lines.push('', `Latest cast (${context.strategy.mode}, ${context.strategy.state}):`);
+    for (const input of Object.values(context.inputs)) {
+      lines.push(`- stream ${input.label}: ${input.assessment.level}${input.assessment.notes.length ? ` · ${input.assessment.notes.join(' ')}` : ''}`);
+    }
+    lines.push(...describeAttempts(context.strategy).map((l) => `  ${l}`));
+    for (const a of context.strategy.attempts) if (a.error?.detail) lines.push(`  (${a.error.code}) ${a.error.detail}`);
+    if (context.strategy.final) lines.push(`Result: ${context.strategy.final.code}: ${context.strategy.final.message}`);
+  }
+  return lines.join('\n');
+}
+
+async function castContext(): Promise<CastContext | undefined> {
+  const context = (await chrome.storage.session.get(KEY.castContext))[KEY.castContext] as CastContext | undefined;
+  // Contexts stored by an older build lack the strategy; treat them as absent.
+  return context?.strategy ? context : undefined;
 }
 
 async function pairWithCompanion(code: string): Promise<CompanionPairResult> {
@@ -628,7 +834,7 @@ function sendToPage(target: Pick<SyncTarget, 'tabId' | 'frameId'>, message: Back
 
 /** The cast is verified playing: ask the source page's player to act as a remote control. */
 async function startSync(requestId: string, pending: CastRequest | undefined): Promise<void> {
-  const context = (await chrome.storage.session.get(KEY.castContext))[KEY.castContext] as CastContext | undefined;
+  const context = await castContext();
   const previous = await syncTarget();
   if (previous && previous.requestId !== requestId && previous.state === 'active') {
     await sendToPage(previous, { type: 'content/sync-stop', requestId: previous.requestId, reason: 'replaced', lastTime: null, wasPlaying: false }).catch(() => undefined);
@@ -703,9 +909,9 @@ async function onSyncLost(sender: chrome.runtime.MessageSender, requestId: strin
 
 /** The candidate of this tab that is on the TV right now. */
 function castingCandidate(context: CastContext | undefined, status: CastStatus | undefined, tabId: number): string | undefined {
-  if (!context || !status?.sessionActive || context.sync.tabId !== tabId) return undefined;
+  if (!context?.strategy || !status?.sessionActive || context.sync.tabId !== tabId) return undefined;
   if (status.requestId !== context.activeRequestId || ['idle', 'error', 'ended'].includes(status.phase)) return undefined;
-  return context.direct.candidateId;
+  return context.activeCandidateId;
 }
 
 function syncInfo(target: SyncTarget | undefined, status: CastStatus | null): SyncInfo {
@@ -770,6 +976,12 @@ chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupReques
       return true;
     case 'popup/set-engine':
       void chrome.storage.local.set({ [KEY.engineMode]: message.mode }).then(() => sendResponse({ ok: true }));
+      return true;
+    case 'popup/cast-cancel':
+      void cancelCast().then(() => sendResponse({ ok: true }));
+      return true;
+    case 'popup/diagnostics':
+      void diagnosticsReport(message.tabId).then(sendResponse);
       return true;
     case 'popup/highlight':
       void chrome.tabs

@@ -22,8 +22,10 @@ export interface CompanionAvailability {
   ffmpeg: boolean;
 }
 
-/** Receiver errors a different delivery engine can plausibly fix. */
-const FALLBACK_CODES: CastErrorCode[] = ['RECEIVER_LOAD_FAILED', 'PLAYBACK_TIMEOUT', 'SEGMENT_FAILURE'];
+/** Receiver errors about *getting* the media: relaying (then converting) can plausibly fix them. */
+const ACCESS_CODES: CastErrorCode[] = ['RECEIVER_LOAD_FAILED', 'PLAYBACK_TIMEOUT', 'SEGMENT_FAILURE', 'MANIFEST_INACCESSIBLE'];
+/** Receiver errors about *decoding* the media: only FFmpeg conversion helps. */
+const CODEC_CODES: CastErrorCode[] = ['UNSUPPORTED_CODEC', 'UNSUPPORTED_CONTAINER'];
 
 const canTranscode = (c: CompanionAvailability) => c.ready && c.ffmpeg;
 
@@ -109,8 +111,9 @@ export function chooseEngine(mode: EngineMode, a: CastabilityAssessment, comp: C
 
 /**
  * Next engine after a receiver-side failure in automatic mode, or null to give up.
- * After Direct fails, the companion analyses first (FFmpeg tells codec problems apart from
- * access problems); after a plain relay fails, conversion is forced.
+ * Codec errors go straight to a forced FFmpeg conversion. Access errors go to the companion:
+ * with FFmpeg it analyses first (telling codec problems apart from access problems); after a plain
+ * relay fails, conversion is forced.
  */
 export function nextEngine(
   mode: EngineMode,
@@ -118,7 +121,11 @@ export function nextEngine(
   error: CastError,
   comp: CompanionAvailability,
 ): { engine: 'companion' | 'transcode'; force: boolean } | null {
-  if (mode !== 'auto' || !comp.ready || !FALLBACK_CODES.includes(error.code)) return null;
+  if (mode !== 'auto' || !comp.ready) return null;
+  if (CODEC_CODES.includes(error.code)) {
+    return comp.ffmpeg && !tried.includes('transcode') ? { engine: 'transcode', force: true } : null;
+  }
+  if (!ACCESS_CODES.includes(error.code)) return null;
   if (!tried.includes('companion') && !tried.includes('transcode')) {
     return comp.ffmpeg ? { engine: 'transcode', force: false } : { engine: 'companion', force: false };
   }

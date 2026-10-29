@@ -2,7 +2,7 @@
 
 Castit is a Chrome (Manifest V3) extension that casts the **actual media stream** of a web page (HLS, DASH, MP4, WebM) to a Chromecast or Google Cast device. It never mirrors, captures or records the tab.
 
-> **Status: Phase 5 (website as remote control).** Direct Casting works end to end. Detection covers embedded cross-origin players, MediaSource players, shadow DOM and HLS/DASH manifests. The optional local companion relays streams the Chromecast can't fetch itself, and with FFmpeg installed it converts formats the Chromecast can't play. Castit picks the cheapest method that works: direct → relay → convert. While casting, the website's own player works as the remote control.
+> **Status: Phase 6 (automatic casting strategy).** Direct Casting works end to end. Detection covers embedded cross-origin players, MediaSource players, shadow DOM and HLS/DASH manifests. The optional local companion relays streams the Chromecast can't fetch itself, and with FFmpeg installed it converts formats the Chromecast can't play. Castit picks the cheapest method that works (direct → relay → convert), checks the TV really plays, recovers automatically when it doesn't, and explains what it tried. While casting, the website's own player works as the remote control.
 
 ## How it works
 
@@ -182,6 +182,39 @@ Once the TV is actually playing, the page's own video player becomes the remote.
 
 When no controllable player is found (e.g. the page navigated away), the popup says so. Castit's own controls (popup, controller page, `Alt+Shift+P`) always work.
 
+## How Castit decides (automatic strategy)
+
+Every cast is a short series of *attempts*. Each attempt pairs one stream with one method, cheapest first.
+
+1. **Pick the first method from what is already known.**
+   - Containers the TV can't open (FLV, AVI) and codecs it can't decode (HEVC on older Chromecasts, …) go to FFmpeg conversion.
+   - Missing CORS headers and Referer checks go to the companion relay.
+   - DRM and expired links stop with an explanation.
+   - Everything else goes direct.
+2. **Verify on the TV.** An attempt only counts once the Chromecast reports it is *playing*. For the next two minutes, Castit also watches for freezes: "playing" or "buffering" with no progress for 20 s counts as a failure.
+3. **Read the TV's own error.** The Chromecast's detailed error code turns "couldn't load" into a specific cause, and that picks the next method:
+
+   | TV's error | Castit's next step |
+   |---|---|
+   | Couldn't download the playlist, a segment or the key | Through the companion (with FFmpeg, it first checks whether conversion is needed) |
+   | Couldn't decode the video | Straight to FFmpeg conversion |
+   | DRM | Stop; Castit doesn't bypass DRM |
+
+4. **Recover.** If playback fails or freezes in the first 3 minutes, Castit switches to the next method and resumes at the same position. A plain relay that fails is followed by a forced conversion.
+5. **Try the same video another way.** When every method failed for one stream, Castit tries other streams of the *same page player* (sites often offer both HLS and DASH). It never switches to a different video or an advert.
+6. **Give up with a reason.** If nothing plays, the message names the most specific cause found across all attempts, e.g. "Castit tried 3 ways; none played. Most likely cause: …".
+
+**In the popup**, a *What Castit tried* card appears whenever a cast failed or needed more than one attempt, for example:
+
+```
+1. Direct to the Chromecast: The Chromecast could not download or read the stream's playlist (often blocked by the server: CORS or Referer checks).
+2. Repackaged by FFmpeg (no re-encoding): playing ✓
+```
+
+**Stop trying** cancels a running series of attempts. **Copy diagnostics** (also in the footer) copies a plain-text report for bug reports. It contains the page and stream addresses *without* their query strings (which often hold signatures), what was detected, every attempt with the TV's error codes, and the companion and FFmpeg status.
+
+The strategy is a pure, unit-tested module (`apps/extension/src/lib/strategy.ts`). The background worker only executes its steps.
+
 ## Using it
 
 1. Open a page with a video and start playing it. The toolbar badge shows how many castable streams Castit found.
@@ -211,9 +244,10 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 14. **Service worker restart:** on `chrome://extensions`, open Castit's service worker DevTools and use **Stop**, then open the popup again. The candidates (kept in `storage.session`) and the controls should still work, because the controller reconnects on its own.
 15. **Errors:** close the controller tab and press play/pause in the popup. Expect "The Castit controller page is not open…". Cast with no Chromecast on the network. Expect "No Cast devices found" or a "No compatible Cast device…" message, not a generic failure.
 16. **No video:** open a page with no video. Expect "No video detected yet…".
-17. **Conversion (needs FFmpeg):** with the companion running, check that the popup says "Converting with FFmpeg (hardware: videotoolbox)" or similar. Open a page with an MKV, or set **Always convert** and cast scenario 1. The popup's "Now casting" line should say "· converted" and list what is converted. Seek far ahead: playback should resume within a couple of seconds. If the file has subtitles, choose them in the Subtitles menu.
-18. **Companion stopped:** stop the companion and set **Always via companion**. Casting should fail with "The local companion is not running or not paired…".
-19. **Real sites:** try a few sites that embed third-party players. Note what the popup lists and whether casting works. These reports drive Phase 7.
+17. **Automatic recovery:** with **Automatic** selected and the companion paired, cast a stream that fails directly (a real site without CORS is ideal). The popup's *What Castit tried* card should show the failed direct attempt with a specific reason, then the working method. Click **Copy diagnostics** and paste it somewhere: it should list both attempts and contain no `?…=` query strings.
+18. **Conversion (needs FFmpeg):** with the companion running, check that the popup says "Converting with FFmpeg (hardware: videotoolbox)" or similar. Open a page with an MKV, or set **Always convert** and cast scenario 1. The popup's "Now casting" line should say "· converted" and list what is converted. Seek far ahead: playback should resume within a couple of seconds. If the file has subtitles, choose them in the Subtitles menu.
+19. **Companion stopped:** stop the companion and set **Always via companion**. Casting should fail with "The local companion is not running or not paired…".
+20. **Real sites:** try a few sites that embed third-party players. Note what the popup lists and whether casting works. These reports drive Phase 7.
 
 ## Design notes
 
@@ -274,6 +308,9 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 - **Players' own JavaScript APIs** (e.g. the YouTube iframe API) are not used; Castit works with the `<video>` element inside the frame.
 - **Media keys and OS media controls:** these don't carry a user gesture inside the page, so they aren't forwarded.
 - **Playback speed:** forwarded with the standard Cast `SET_PLAYBACK_RATE` message (0.5×–2×); support depends on the receiver.
+- **What has not been tested for Phase 6:** the strategy is unit-tested (ladder, codec vs. access errors, alternatives, giving up, error-code mapping), and the popup's attempt card was checked visually. A real failing site on your Chromecast has not been tried yet.
+- **TV error codes are best effort:** Castit listens for them on the Cast media channel. If a Cast SDK version keeps that channel to itself, errors stay generic and Castit falls back to the plain ladder.
+- **Freeze detection** covers the first 2 minutes of playback. Later problems are reported, not auto-recovered, because expired links usually need the page to be reloaded.
 - **Fullscreen badge:** the badge follows the player into fullscreen only when the fullscreen element contains it.
 - **DRM-protected streams** (Widevine, PlayReady, FairPlay, SAMPLE-AES) are detected and refused with an explanation. Castit never extracts keys or decrypts.
 - **No extension icons yet.** Chrome shows a default letter icon. Icons are planned for Phase 8.
@@ -285,6 +322,6 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 3. ✅ Local streaming companion (Node.js): pairing, Range, HLS/DASH relay, SSRF protection, Direct → Companion fallback
 4. ✅ FFmpeg: codec analysis per Chromecast type, stream copy/remux, audio-only conversion, hardware-accelerated transcoding, seekable segmented HLS, WebVTT subtitles, cleanup
 5. ✅ Website as remote control: page play/seek/volume/speed → TV, TV state → page, loop prevention, embedded players, restore on cast end
-6. Automatic engine selection and failure recovery
+6. ✅ Automatic strategy: one decision engine, TV error codes, freeze detection, recovery with resume, same-player alternatives, diagnostics
 7. Compatibility testing across site categories
 8. Polish, reconnection, production builds
