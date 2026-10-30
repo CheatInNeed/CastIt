@@ -80,6 +80,8 @@ const KEY = {
   tab: (tabId: number) => `tab:${tabId}`,
   castStatus: 'castStatus',
   pendingCast: 'pendingCast',
+  /** The request playing on the TV (for a reopened controller to adopt). */
+  activeCast: 'activeCast',
   controllerToken: 'controllerToken',
   controllerTabId: 'controllerTabId',
   castContext: 'castContext',
@@ -145,27 +147,66 @@ function updateTab(tabId: number, mutate: (state: TabMediaState) => boolean | vo
     const state = await readTab(tabId);
     if (mutate(state) === false) return;
     await chrome.storage.session.set({ [KEY.tab(tabId)]: state });
-    await updateBadge(tabId, state);
+    scheduleBadge(tabId, state);
   });
 }
 
 function resetTab(tabId: number, pageUrl?: string): Promise<void> {
   return serialized(KEY.tab(tabId), async () => {
     await chrome.storage.session.set({ [KEY.tab(tabId)]: emptyTabState(tabId, pageUrl) });
-    await updateBadge(tabId, emptyTabState(tabId));
+    scheduleBadge(tabId, emptyTabState(tabId));
   });
 }
 
-async function updateBadge(tabId: number, state: TabMediaState): Promise<void> {
+/** Busy pages produce many state writes per second; the badge is recomputed at most every 400 ms. */
+const badgeTimers = new Map<number, { timer: ReturnType<typeof setTimeout>; state?: TabMediaState }>();
+
+function scheduleBadge(tabId: number, state?: TabMediaState): void {
+  const pending = badgeTimers.get(tabId);
+  if (pending) {
+    if (state) pending.state = state;
+    return;
+  }
+  const entry = {
+    state,
+    timer: setTimeout(() => {
+      badgeTimers.delete(tabId);
+      void updateBadge(tabId, entry.state);
+    }, 400),
+  };
+  badgeTimers.set(tabId, entry);
+}
+
+/** Blue count of videos found; a green ▶ on the tab that is casting. */
+async function updateBadge(tabId: number, state?: TabMediaState): Promise<void> {
+  const [tabState, session] = await Promise.all([state ?? readTab(tabId), chrome.storage.session.get([KEY.castContext, KEY.castStatus])]);
+  const context = session[KEY.castContext] as CastContext | undefined;
+  const status = session[KEY.castStatus] as CastStatus | undefined;
+  const casting = context?.tabId === tabId && !!status?.sessionActive && status.requestId === context.activeRequestId;
   // Count real videos, not every stream file the page fetched.
-  const ranked = rankCandidates(state);
+  const ranked = rankCandidates(tabState);
   const count = ranked.filter(isPrimaryCandidate).length || ranked.length;
   try {
-    await chrome.action.setBadgeBackgroundColor({ tabId, color: '#2563eb' });
-    await chrome.action.setBadgeText({ tabId, text: count > 0 ? String(Math.min(count, 99)) : '' });
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: casting ? '#16a34a' : '#2563eb' });
+    await chrome.action.setBadgeText({ tabId, text: casting ? '▶' : count > 0 ? String(Math.min(count, 99)) : '' });
+    await chrome.action.setTitle({ tabId, title: casting ? `Castit: casting to ${status?.deviceName ?? 'your TV'}` : 'Castit' });
   } catch {
     // Tab closed in the meantime.
   }
+}
+
+/**
+ * Removes state of tabs that no longer exist (a response that finished just after its tab
+ * closed can write state again). Runs at most once a minute, when the popup opens.
+ */
+let lastSweep = 0;
+async function sweepClosedTabs(): Promise<void> {
+  if (Date.now() - lastSweep < 60_000) return;
+  lastSweep = Date.now();
+  const [all, tabs] = await Promise.all([chrome.storage.session.get(null), chrome.tabs.query({})]);
+  const open = new Set(tabs.map((t) => `tab:${t.id}`));
+  const stale = Object.keys(all).filter((k) => k.startsWith('tab:') && !open.has(k));
+  if (stale.length) await chrome.storage.session.remove(stale);
 }
 
 // ---------------------------------------------------------------- network detection
@@ -356,8 +397,10 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       if (port.sender?.tab?.id !== undefined) {
         await chrome.storage.session.set({ [KEY.controllerTabId]: port.sender.tab.id });
       }
-      const pending = ((await chrome.storage.session.get(KEY.pendingCast))[KEY.pendingCast] as CastRequest | undefined) ?? null;
-      port.postMessage({ type: 'controller/welcome', pending } satisfies BackgroundToController);
+      const stored = await chrome.storage.session.get([KEY.pendingCast, KEY.activeCast]);
+      const pending = (stored[KEY.pendingCast] as CastRequest | undefined) ?? null;
+      const active = (stored[KEY.activeCast] as CastRequest | undefined) ?? null;
+      port.postMessage({ type: 'controller/welcome', pending, active } satisfies BackgroundToController);
       return;
     }
 
@@ -376,6 +419,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           break;
         }
         await onAttemptPlaying(raw.requestId);
+        if (pending) await chrome.storage.session.set({ [KEY.activeCast]: pending });
         await chrome.storage.session.remove(KEY.castNotice);
         // The TV is playing: turn the page's player into a remote (this also pauses it).
         await startSync(raw.requestId, pending);
@@ -392,6 +436,12 @@ chrome.runtime.onConnectExternal.addListener((port) => {
 async function onControllerStatus(status: CastStatus): Promise<void> {
   const previous = (await chrome.storage.session.get(KEY.castStatus))[KEY.castStatus] as CastStatus | undefined;
   await chrome.storage.session.set({ [KEY.castStatus]: status });
+  if (!status.sessionActive) await chrome.storage.session.remove(KEY.activeCast);
+  // Casting started or ended: flip the casting tab's badge.
+  if (status.sessionActive !== previous?.sessionActive || status.requestId !== previous?.requestId) {
+    const context = await castContext();
+    if (context) scheduleBadge(context.tabId);
+  }
   await routeToPage(status);
   // The controller needs a click (user gesture) to open Chrome's device picker; bring it forward.
   if (status.phase === 'awaiting-device' && previous?.phase !== 'awaiting-device') await focusController();
@@ -447,6 +497,7 @@ async function popupState(tabId: number): Promise<PopupState> {
     transcodeSettings(),
   ]);
   void inspectManifests(tabId);
+  void sweepClosedTabs();
   const candidates: CandidateView[] = rankCandidates(state).map((c) => ({
     ...c,
     assessment: withCompanion(assessCastability(c), comp, mode),
@@ -568,6 +619,7 @@ async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnTy
       context.strategy.state = 'failed';
       context.strategy.final = step.error;
       await saveContext(context);
+      await replaceCompanionSession(comp.config, null);
       if (context.strategy.attempts.length > 0) {
         await chrome.storage.session.set({ [KEY.castNotice]: step.error.message });
       }
@@ -761,6 +813,7 @@ async function cancelCast(): Promise<void> {
   if (!context || context.strategy.state !== 'running') return;
   context.strategy.state = 'cancelled';
   await saveContext(context);
+  void loadCompanionConfig().then((config) => replaceCompanionSession(config, null));
   await chrome.storage.session.set({ [KEY.castNotice]: 'Stopped trying.' });
   sendCommand({ type: 'stop' });
 }
@@ -924,9 +977,11 @@ function sendCommand(command: RemoteCommand): CommandResponse {
     void loadCompanionConfig().then((config) => replaceCompanionSession(config, null));
   }
   if (postToController({ type: 'controller/command', command })) return { ok: true };
+  // The controller tab was closed: reopen it; it rejoins the running cast by itself.
+  void openController();
   return {
     ok: false,
-    error: err('CONTROLLER_UNAVAILABLE', 'The Castit controller page is not open, so the Chromecast cannot be controlled.'),
+    error: err('CONTROLLER_UNAVAILABLE', 'Reopening the Castit controller to reconnect to your TV… Try again in a moment.'),
   };
 }
 

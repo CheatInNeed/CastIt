@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Castit",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "Cast the actual video stream (never the tab) from web pages to Chromecast and Google Cast devices.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "minimum_chrome_version": "116",
   "permissions": [
     "webRequest",
@@ -18,7 +24,11 @@
   },
   "action": {
     "default_popup": "popup/index.html",
-    "default_title": "Castit"
+    "default_title": "Castit",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   },
   "content_scripts": [
     {

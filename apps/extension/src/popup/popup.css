@@ -417,3 +417,13 @@ button.pill {
 .actions {
   gap: 14px;
 }
+
+.advice {
+  margin-top: 4px;
+  color: var(--text);
+}
+
+.error .advice {
+  color: inherit;
+  opacity: 0.9;
+}

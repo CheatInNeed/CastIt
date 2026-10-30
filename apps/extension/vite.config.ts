@@ -1,7 +1,7 @@
 // Builds the background service worker (ES module) and the popup page.
 // The content script is built separately (vite.content.config.ts) because
 // content scripts cannot be ES modules and must not share chunks.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -16,6 +16,9 @@ function manifest(): Plugin {
       const json = JSON.parse(readFileSync(`${here}manifest.json`, 'utf8'));
       json.externally_connectable = { matches: [`${new URL(controllerUrl).origin}/*`] };
       this.emitFile({ type: 'asset', fileName: 'manifest.json', source: JSON.stringify(json, null, 2) });
+      for (const icon of readdirSync(`${here}icons`)) {
+        this.emitFile({ type: 'asset', fileName: `icons/${icon}`, source: readFileSync(`${here}icons/${icon}`) });
+      }
     },
   };
 }

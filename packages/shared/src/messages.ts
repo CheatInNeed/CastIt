@@ -154,7 +154,12 @@ export type ControllerToBackground =
   | { type: 'controller/playback-problem'; requestId: string; error: CastError; position: number };
 
 export type BackgroundToController =
-  | { type: 'controller/welcome'; pending: CastRequest | null }
+  /**
+   * pending: a cast waiting to be loaded. active: the cast that was playing when the controller
+   * last disconnected (tab closed, worker restarted); a reopened controller adopts it if the TV
+   * is still playing that stream, so remote control and page sync continue.
+   */
+  | { type: 'controller/welcome'; pending: CastRequest | null; active?: CastRequest | null }
   | { type: 'controller/rejected'; reason: string }
   | { type: 'controller/load'; request: CastRequest }
   | { type: 'controller/command'; command: RemoteCommand };

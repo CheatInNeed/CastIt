@@ -28,6 +28,10 @@
       <div id="now-title" class="title"></div>
       <div id="now-plan" class="muted small" hidden></div>
       <div id="now-sync" class="muted small" hidden></div>
+      <div id="now-reconnect" class="notice warn small" hidden>
+        The controller tab is closed; the TV keeps playing.
+        <button id="reconnect" class="link small">Reconnect</button>
+      </div>
       <div class="seek">
         <span id="now-time" class="mono">0:00</span>
         <input id="now-seek" type="range" min="0" max="0" step="1" value="0" aria-label="Seek" />
@@ -67,6 +71,7 @@
         <span id="progress-state" class="pill small"></span>
       </div>
       <div id="progress-list" class="steps"></div>
+      <div id="progress-advice" class="advice small" hidden></div>
       <div class="row actions">
         <button id="stop-trying" class="link small" hidden>Stop trying</button>
         <button id="copy-diag" class="link small">Copy diagnostics</button>

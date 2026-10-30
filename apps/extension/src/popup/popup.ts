@@ -16,6 +16,7 @@ import {
   type PopupState,
   type RemoteCommand,
 } from '@castit/shared';
+import { adviceFor } from '../lib/advice.ts';
 import { isPrimaryCandidate, selectMainCandidate } from '../lib/rank.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -30,10 +31,26 @@ function send<T>(message: PopupRequest): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
 }
 
+function advice(error: CastError): string | undefined {
+  return adviceFor(error, { companion: state?.companion?.state ?? 'offline', ffmpeg: !!state?.companion?.ffmpeg });
+}
+
+/** Error box: what went wrong (with detail), then what the user can do about it. */
 function showError(error: CastError | null): void {
   const box = $('error');
   box.hidden = !error;
-  box.textContent = error ? error.message + (error.detail ? ` (${error.detail})` : '') : '';
+  box.replaceChildren();
+  if (!error) return;
+  const what = document.createElement('div');
+  what.textContent = error.message + (error.detail ? ` (${error.detail})` : '');
+  box.append(what);
+  const tip = advice(error);
+  if (tip) {
+    const next = document.createElement('div');
+    next.className = 'advice';
+    next.textContent = `What you can do: ${tip}`;
+    box.append(next);
+  }
 }
 
 async function refresh(): Promise<void> {
@@ -50,6 +67,7 @@ function render(): void {
     () => renderConnection(s),
     () => renderCandidates(s),
     () => renderNow(s.castStatus),
+    () => renderReconnect(s),
     () => renderSync(s),
     () => renderCompanion(s.companion, s.engineMode, s.transcodeSettings),
     () => renderNotice(s.notice),
@@ -62,6 +80,11 @@ function render(): void {
       console.warn('Castit popup:', e);
     }
   }
+}
+
+/** A cast is (probably) still running, but nothing can control it until the controller is back. */
+function renderReconnect(s: PopupState): void {
+  $('now-reconnect').hidden = s.controllerConnected || !s.castStatus?.sessionActive;
 }
 
 function renderStale(s: PopupState): void {
@@ -102,6 +125,10 @@ function renderProgress(progress: CastProgress | undefined): void {
     }),
   );
   $('stop-trying').hidden = progress.state !== 'running';
+  const tip = progress.state === 'failed' && progress.final ? advice(progress.final) : undefined;
+  const advise = $('progress-advice');
+  advise.hidden = !tip;
+  advise.textContent = tip ? `What you can do: ${tip}` : '';
 }
 
 async function copyDiagnostics(button: HTMLElement): Promise<void> {
@@ -118,6 +145,8 @@ async function copyDiagnostics(button: HTMLElement): Promise<void> {
 
 function renderNotice(notice: string | null): void {
   const box = $('notice');
+  // The attempts card already states a final failure; don't say it twice.
+  if (notice && notice === state?.progress?.final?.message) notice = null;
   box.hidden = !notice;
   box.textContent = notice ?? '';
 }
@@ -442,6 +471,7 @@ function wire(): void {
 
   $('open-controller').addEventListener('click', () => void send({ type: 'popup/open-controller' }));
   $('reload-ext').addEventListener('click', () => chrome.runtime.reload());
+  $('reconnect').addEventListener('click', () => void send({ type: 'popup/open-controller' }));
   $('copy-diag').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
   $('copy-diag-footer').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
   $('stop-trying').addEventListener('click', async () => {
@@ -504,6 +534,8 @@ function wire(): void {
       state.castStatus = (changes.castStatus.newValue as CastStatus | undefined) ?? null;
       renderConnection(state);
       renderNow(state.castStatus);
+      // A fresh status means a controller is talking again: pick up its connection state.
+      if (!state.controllerConnected) void refresh();
     }
     if (changes.syncTarget && state) void refresh();
     if (changes.castContext && state) void refresh();

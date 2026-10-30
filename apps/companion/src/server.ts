@@ -29,7 +29,7 @@ import { handleMediaRequest } from './streaming.ts';
 import { JobManager, sweepStaleJobDirs } from './transcoder.ts';
 import { requestUpstream, upstreamHeaders } from './upstream.ts';
 
-export const VERSION = '0.4.0';
+export const VERSION = '1.0.0';
 const MAX_BODY_BYTES = 64 * 1024;
 
 export interface CompanionOptions extends CompanionSettings {

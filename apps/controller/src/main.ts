@@ -114,6 +114,7 @@ async function main(): Promise<void> {
     (message) => {
       switch (message.type) {
         case 'controller/welcome':
+          if (message.active) castController.adopt(message.active);
           bridge?.send({ type: 'controller/status', status: castController.status() });
           if (message.pending) void castController.load(message.pending);
           break;

@@ -1,6 +1,6 @@
 {
   "name": "castit",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p apps/extension && tsc --noEmit -p apps/controller && tsc --noEmit -p apps/companion",
     "companion": "npm start -w @castit/companion --",
     "compat": "node tests/compat/report.ts",
-    "compat:site": "node tests/compat/movy-sim/run.ts"
+    "compat:site": "node tests/compat/movy-sim/run.ts",
+    "package": "node scripts/package.mjs",
+    "icons": "node apps/extension/scripts/make-icons.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.3.7",

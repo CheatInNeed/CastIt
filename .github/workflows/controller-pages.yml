@@ -1,0 +1,39 @@
+# Publishes the Castit controller page (apps/controller) to GitHub Pages.
+# Enable it in the repository: Settings → Pages → Source: GitHub Actions.
+# Then build the extension for it: npm run package -- --controller https://<you>.github.io/<repo>/
+name: Controller on GitHub Pages
+
+on:
+  push:
+    branches: [master, main]
+    paths: ['apps/controller/**', 'packages/shared/**', 'package-lock.json', '.github/workflows/controller-pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @castit/controller
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/controller/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

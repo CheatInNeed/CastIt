@@ -82,6 +82,8 @@ export class CastController {
   private verify: { requestId: string; timer: ReturnType<typeof setTimeout> } | null = null;
   private lastTimeEmit = 0;
   private receiverError: ReceiverError | undefined;
+  /** A cast started before this controller page was (re)opened, waiting to be confirmed. */
+  private adoptable: CastRequest | null = null;
   private listenedSession: cast.framework.CastSession | null = null;
   private watch: {
     requestId: string;
@@ -129,6 +131,28 @@ export class CastController {
       this.override = 'awaiting-device';
       this.emit();
     }
+  }
+
+  /**
+   * Takes over a cast that was started before this page was opened (e.g. the controller tab was
+   * closed and reopened). Only adopted once the rejoined session is confirmed to play that stream,
+   * so a cast started elsewhere is never mistaken for Castit's.
+   */
+  adopt(req: CastRequest): void {
+    if (this.current || this.pending) return;
+    this.adoptable = req;
+    this.tryAdopt();
+  }
+
+  private tryAdopt(): void {
+    const req = this.adoptable;
+    const info = this.remote?.player.mediaInfo as (chrome.cast.media.MediaInfo & { contentUrl?: string }) | undefined;
+    if (!req || !this.hasSession || !info) return;
+    this.adoptable = null;
+    if (info.contentId !== req.url && info.contentUrl !== req.url) return;
+    this.current = req;
+    this.listenForReceiverErrors(this.context.getCurrentSession());
+    this.emit();
   }
 
   /** Opens Chrome's Cast device picker. Must run inside a user gesture (click). */
@@ -327,6 +351,7 @@ export class CastController {
   }
 
   private onPlayerChange(field: string): void {
+    if (field === 'mediaInfo' || field === 'isMediaLoaded') this.tryAdopt();
     if (field === 'playerState' || field === 'isMediaLoaded') {
       // A new receiver state supersedes Castit's own "loading"/"error" overlay.
       if (this.override === 'loading' && !this.loading) this.override = null;

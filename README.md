@@ -2,7 +2,17 @@
 
 Castit is a Chrome (Manifest V3) extension that casts the **actual media stream** of a web page (HLS, DASH, MP4, WebM) to a Chromecast or Google Cast device. It never mirrors, captures or records the tab.
 
-> **Status: Phase 7 (compatibility testing).** Direct Casting works end to end. Detection covers embedded cross-origin players, MediaSource players, shadow DOM and HLS/DASH manifests. The optional local companion relays streams the Chromecast can't fetch itself, and with FFmpeg installed it converts formats the Chromecast can't play. Castit picks the cheapest method that works (direct → relay → convert), checks the TV really plays, recovers automatically when it doesn't, and explains what it tried. While casting, the website's own player works as the remote control.
+> **Version 1.0.** All eight phases are built. Castit detects the real stream on a page, including embedded cross-origin players, MediaSource players, shadow DOM, HLS/DASH, live streams and signed links. It casts that stream by the cheapest method that works: direct, through the optional local companion, or converted by FFmpeg. It checks the TV really plays, recovers by itself when it doesn't, and explains what it tried. While casting, the website's own player is the remote.
+
+## Quick start
+
+1. **Build and load the extension.** Run `npm install`, then `npm run build`. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick `apps/extension/dist`.
+2. **Start the controller page** and leave it running: `npm run dev:controller`. For everyday use, publish it once (see [Production install](#production-install)) and skip this step.
+3. **Cast.** Play a video on any page, click the Castit icon (or press **Alt+Shift+C**) and click **Cast**. The first time, pick your Chromecast on the controller page.
+4. **Optional:** the local companion handles sites that block the Chromecast, and with FFmpeg it converts formats the TV can't play. Run `npm run companion` and pair it with the code it prints, under **Local companion** in the popup.
+5. **Control playback** from the page's own player, the popup, or **Alt+Shift+P**.
+
+**Contents:** [How it works](#how-it-works) · [Install](#install-and-run-development) · [Production install](#production-install) · [Companion](#the-local-streaming-companion-optional) · [Page as remote](#the-websites-player-as-a-remote-control) · [Strategy](#how-castit-decides-automatic-strategy) · [Using it](#using-it) · [Tests](#manual-test-checklist) · [Compatibility](#compatibility) · [Limitations](#known-limitations)
 
 ## How it works
 
@@ -64,15 +74,21 @@ Then:
 
 To rebuild the extension on every change, run `npm run dev:extension` and click the reload icon on `chrome://extensions` after each rebuild.
 
-### Production controller URL
+## Production install
 
-The controller URL is fixed when the extension is built, because `externally_connectable` must be in the manifest:
+For everyday use, the controller page should live on a permanent HTTPS address instead of your laptop's dev server.
 
-```bash
-CASTIT_CONTROLLER_URL="https://<user>.github.io/castit/" npm run build
-```
+1. **Publish the controller** to GitHub Pages. Push the repository to GitHub, then set **Settings → Pages → Source: GitHub Actions**. The included workflow (`.github/workflows/controller-pages.yml`) builds and publishes `apps/controller` on every push that touches it. Any other static HTTPS host works too: upload `apps/controller/dist`, whose asset paths are relative, so a sub-path is fine.
+2. **Build the extension for that address.** The address is baked into the manifest, because `externally_connectable` must list it:
 
-Deploy `apps/controller/dist` to that URL. The build uses relative asset paths, so it works from a sub-path.
+   ```bash
+   npm run package -- --controller https://<you>.github.io/<repo>/
+   ```
+
+   This builds both apps and writes `release/castit-extension-<version>.zip`. It refuses plain-HTTP addresses other than localhost.
+3. **Load it** with **Load unpacked** on `apps/extension/dist` (or unzip the release file somewhere permanent and load that). The Chrome Web Store dashboard accepts the zip as-is.
+
+The extension only accepts the controller from that exact origin, and only with the per-browser-session token it hands out when it opens the controller. On `github.io` your other Pages sites share the origin, which is why the token is required.
 
 ### Scripts
 
@@ -87,6 +103,8 @@ Deploy `apps/controller/dist` to that URL. The build uses relative asset paths, 
 | `npm run compat` | Shows what Castit would list and choose on each recorded real site |
 | `npm run compat:site` | Starts the local movy-like test site (aggregator → embedded player → protected video server) |
 | `npm run companion` | Starts the local streaming companion (add `-- --pair` to pair another browser, `-- --help` for options, `-- --ffmpeg <path>` for a custom FFmpeg) |
+| `npm run package -- --controller <https url>` | Production build of both apps plus `release/castit-extension-<version>.zip` |
+| `npm run icons` | Regenerates the icons (`apps/extension/icons`, controller favicon) |
 
 ## The local streaming companion (optional)
 
@@ -219,6 +237,10 @@ The strategy is a pure, unit-tested module (`apps/extension/src/lib/strategy.ts`
 
 ## Using it
 
+The toolbar badge shows how many videos Castit found on the page (blue). On the tab that is casting it shows a green ▶, and hovering the icon names the TV.
+
+If you close the controller tab while casting, the TV keeps playing. The popup then shows **Reconnect**, and pressing any control does the same: the controller reopens, rejoins the running cast (only once it has confirmed the TV still plays that stream) and keeps the page's player in sync. When something fails, the popup says what went wrong and **what you can do**, for example pair the companion, install FFmpeg, reload the page, or check the Wi-Fi. The advice depends on what you already have set up.
+
 1. Open a page with a video and start playing it. The toolbar badge shows how many castable streams Castit found.
 2. Click the Castit icon (or press **Alt+Shift+C**). The best candidate is pre-selected. Each candidate shows its format, quality, host and a castability rating.
 3. Click **Cast**. Castit fetches the stream once without cookies to check it (expired URL? DRM? CORS? live or VOD? TS or fMP4 segments?), then hands it to the controller.
@@ -327,6 +349,11 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 
 ## Known limitations
 
+- **What has not been tested for Phase 8:**
+  - **Reconnect after closing the controller tab:** unit-tested logic, not yet tried on your Chromecast.
+  - **Production build on GitHub Pages:** the packaging was checked locally, but the Pages workflow hasn't run because the repository has no GitHub remote yet.
+  - **Popup states** (reconnect, advice, casting badge text) were checked visually with sample data.
+
 - **What has been tested:** Phase 1 casting was tested by the user and works. Phase 2's detection is unit-tested, and its MAIN-world hooks were checked against real hls.js playback in a browser.
 - **What the Phase 3 companion test covered:** end-to-end tests against a mock upstream (pairing, auth, relay, Range, redirects, cancellation, device binding, SSRF). Real public HLS was relayed and played back in a cross-origin hls.js player (1080p, no errors).
 - **Verified on a real Chromecast:** a DASH stream was relayed through the companion and played on the TV, so the receiver does accept media over plain `http://` from your LAN. The companion also answers Private Network Access preflights in case a receiver requires them.
@@ -375,4 +402,4 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 5. ✅ Website as remote control: page play/seek/volume/speed → TV, TV state → page, loop prevention, embedded players, restore on cast end
 6. ✅ Automatic strategy: one decision engine, TV error codes, freeze detection, recovery with resume, same-player alternatives, diagnostics
 7. ✅ Compatibility: recorded real sites as regression tests, a local movy-like test site, fixes from the findings, results matrix *(your TV checklist pending)*
-8. Polish, reconnection, production builds
+8. ✅ Polish: icons, production packaging and GitHub Pages deployment, reconnect after the controller closes, actionable error advice, casting badge, cleanup and badge coalescing
