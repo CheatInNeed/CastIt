@@ -7,7 +7,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CreateSessionResponse } from '@castit/shared';
 import { startCompanion, type RunningCompanion } from '../../apps/companion/src/server.ts';
 import { assessCastability } from '../../apps/extension/src/lib/castability.ts';
 import { chooseEngine, upstreamContextFor } from '../../apps/extension/src/lib/engine.ts';
@@ -22,7 +21,6 @@ const MEDIA = '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg-0.ts\n#EXT-X-EN
 let upstream: Server;
 let sim: RunningSim;
 let companion: RunningCompanion;
-let key = '';
 const logs: string[] = [];
 const configDir = mkdtempSync(join(tmpdir(), 'castit-movy-'));
 
@@ -46,7 +44,6 @@ beforeAll(async () => {
     log: (line) => logs.push(line),
   });
   companion = await startCompanion({
-    controlPort: 0,
     mediaPort: 0,
     mediaListenHost: '127.0.0.1',
     publicHost: '127.0.0.1',
@@ -56,9 +53,6 @@ beforeAll(async () => {
     ffprobePath: '/nonexistent/ffprobe',
     log: () => undefined,
   });
-  const code = companion.pairing.issue();
-  const pair = await fetch(`${companion.controlUrl}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
-  key = ((await pair.json()) as { apiKey: string }).apiKey;
 });
 
 afterAll(async () => {
@@ -116,12 +110,7 @@ describe('movy-like site: Castit', () => {
     const url = sim.signedMaster();
     const context = upstreamContextFor({ url, kind: 'hls' }, `${sim.player}/e/1`, sim.player, 'Chrome');
     expect(context).toMatchObject({ referer: `${sim.player}/`, origin: sim.player });
-    const res = await fetch(`${companion.controlUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({ url, kind: 'hls', context }),
-    });
-    const session = (await res.json()) as CreateSessionResponse;
+    const session = await companion.createSession({ url, kind: 'hls', context });
     expect(session.check).toMatchObject({ ok: true, status: 200 });
 
     // What the Chromecast would now fetch: master → variant → segment, all through the relay.

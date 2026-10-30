@@ -1,58 +1,138 @@
-// CLI entry point: `npm run companion` (add `-- --pair` to pair another browser).
+// Castit companion, run by Chrome as a native messaging host (installed by `npm run setup`).
+// Chrome starts this process when the extension connects and closes stdin when it disconnects.
+// stdout carries only protocol messages, so everything else is logged to ~/.castit/companion.log.
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  COMPANION_PROTOCOL,
+  type CastDeviceInfo,
+  type CompanionEvent,
+  type CompanionHello,
+  type CompanionReply,
+  type CompanionRequest,
+} from '@castit/shared';
+import { Discovery } from './cast/discovery.ts';
+import { Receiver } from './cast/receiver.ts';
 import { settingsFromEnv } from './config.ts';
-import { startCompanion, VERSION } from './server.ts';
+import { encodeNative, NativeReader } from './native.ts';
+import { CompanionRequestError, startCompanion, VERSION } from './server.ts';
 
 const settings = settingsFromEnv();
-const argv = process.argv.slice(2);
+mkdirSync(settings.configDir, { recursive: true, mode: 0o700 });
+const logFile = join(settings.configDir, 'companion.log');
+try {
+  if (statSync(logFile).size > 1_000_000) writeFileSync(logFile, '');
+} catch {
+  /* no log yet */
+}
+const log = (message: string) => {
+  try {
+    appendFileSync(logFile, `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    /* logging must never break the host */
+  }
+};
+// Nothing may write to stdout except the protocol.
+console.log = console.info = console.warn = console.error = (...args: unknown[]) => log(args.map(String).join(' '));
 
-if (argv.includes('--help')) {
-  console.log(`Castit companion ${VERSION}
-
-Options:
-  --pair                 Show a new pairing code even if a browser is already paired
-  --unpair-all           Forget every paired browser, then show a pairing code
-  --public-host <ip>     Address the Chromecast uses to reach this computer (default: auto LAN IPv4)
-  --media-port <port>    LAN media port (default 47801)
-  --control-port <port>  Localhost control port (default 47800)
-  --allow-private        Allow relaying from private/LAN upstream servers (off by default)
-  --config-dir <dir>     Where pairing data is stored (default ~/.castit)
-  --ffmpeg <path>        FFmpeg binary (default: ffmpeg on PATH)
-  --ffprobe <path>       ffprobe binary (default: ffprobe on PATH)`);
-  process.exit(0);
+function write(message: CompanionEvent | CompanionReply): void {
+  process.stdout.write(encodeNative(message));
 }
 
-const companion = await startCompanion(settings).catch((e: NodeJS.ErrnoException) => {
-  if (e.code === 'EADDRINUSE') console.error(`Port already in use (${e.message}). Is the companion already running?`);
-  else console.error(e);
-  process.exit(1);
+const companion = await startCompanion({ ...settings, log }).catch((e: NodeJS.ErrnoException) => {
+  if (e.code !== 'EADDRINUSE') throw e;
+  // Another companion (e.g. a second Chrome profile) has the usual port: any free port works.
+  log(`media port ${settings.mediaPort} busy; using a random port`);
+  return startCompanion({ ...settings, mediaPort: 0, log });
 });
+log(`started ${VERSION} · media ${companion.mediaBaseUrl} · FFmpeg ${companion.ffmpeg.available ? 'yes' : 'no'}`);
 
-if (argv.includes('--unpair-all')) companion.store.revokeAll();
+const discovery = new Discovery(log);
+const receiver = new Receiver({
+  status: (status) => write({ type: 'event/status', status }),
+  loadResult: (requestId, error) =>
+    write(error ? { type: 'event/load-result', requestId, ok: false, error } : { type: 'event/load-result', requestId, ok: true }),
+  playbackProblem: (requestId, error, position) => write({ type: 'event/playback-problem', requestId, error, position }),
+});
+discovery.on('change', (devices: CastDeviceInfo[]) => {
+  receiver.devicesAvailable = devices.length > 0;
+  write({ type: 'event/devices', devices });
+});
+discovery.start();
 
-console.log(`
-Castit companion ${VERSION}
-  control API : ${companion.controlUrl}  (this computer only)
-  media server: ${companion.mediaBaseUrl}  (Chromecast fetches from here)
-  transcoding : ${companion.ffmpeg.available ? `FFmpeg ${companion.ffmpeg.version ?? ''} · ${companion.ffmpeg.encoder.hardware ? `hardware (${companion.ffmpeg.encoder.name})` : 'software (libx264)'}` : `off: ${companion.ffmpeg.error}`}`);
-if (settings.allowPrivateUpstreams) console.log('  WARNING: --allow-private is on; LAN/loopback upstreams can be relayed.');
+/** Re-attaching to a running cast finishes before commands are executed. */
+let adopting: Promise<void> = Promise.resolve();
 
-if (!companion.store.paired || argv.includes('--pair') || argv.includes('--unpair-all')) {
-  const code = companion.pairing.issue();
-  console.log(`
-  Pairing code: ${code}   (valid 10 minutes, 5 attempts)
-  Open the Castit popup → Companion → enter this code.
-`);
-} else {
-  console.log('\n  Already paired. Run with --pair to pair another browser.\n');
+async function handle(request: CompanionRequest): Promise<unknown> {
+  switch (request.type) {
+    case 'hello': {
+      if (request.active) adopting = receiver.adopt(request.active.device, request.active.request);
+      const ffmpeg = companion.ffmpeg;
+      return {
+        name: 'castit-companion',
+        version: VERSION,
+        protocol: COMPANION_PROTOCOL,
+        mediaBaseUrl: companion.mediaBaseUrl,
+        ffmpeg: ffmpeg.available,
+        hwEncoder: ffmpeg.available && ffmpeg.encoder.hardware ? ffmpeg.encoder.name : null,
+        devices: discovery.devices(),
+      } satisfies CompanionHello;
+    }
+    case 'devices':
+      discovery.refresh();
+      return discovery.devices();
+    case 'create-session':
+      return companion.createSession(request.request);
+    case 'delete-session':
+      companion.deleteSession(request.sessionId);
+      return undefined;
+    case 'cast':
+      // The outcome arrives later as an event/load-result.
+      void receiver.cast(request.device, request.request).catch((e) => log(`cast failed: ${(e as Error).message}`));
+      return undefined;
+    case 'command':
+      await adopting;
+      return receiver.execute(request.command);
+    default:
+      throw new CompanionRequestError('BAD_REQUEST', 'Unknown request.');
+  }
 }
 
-// Kill FFmpeg and delete temp folders even on an abrupt exit.
-process.on('exit', () => companion.closeSync());
-
-const shutdown = async () => {
-  console.log('\nStopping companion…');
+let stopping = false;
+async function shutdown(): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  log('stopping');
+  // Leaves the TV playing: a direct cast does not need this computer.
+  receiver.close();
+  discovery.stop();
   await companion.close();
   process.exit(0);
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+}
+
+const reader = new NativeReader();
+process.stdin.on('data', (chunk: Buffer) => {
+  let messages: unknown[];
+  try {
+    messages = reader.push(chunk);
+  } catch (e) {
+    log(`bad message from Chrome: ${(e as Error).message}`);
+    return void shutdown();
+  }
+  for (const raw of messages) {
+    const { id, ...request } = raw as CompanionRequest & { id: number };
+    handle(request as CompanionRequest).then(
+      (result) => write({ id, ok: true, result }),
+      (e: Error) => write({ id, ok: false, error: e.message, code: e instanceof CompanionRequestError ? e.code : 'INTERNAL' }),
+    );
+  }
+});
+process.stdin.on('end', () => void shutdown());
+process.on('SIGTERM', () => void shutdown());
+process.on('SIGINT', () => void shutdown());
+// Kill FFmpeg and delete temp folders even on an abrupt exit.
+process.on('exit', () => companion.closeSync());
+process.on('uncaughtException', (e) => {
+  log(`crash: ${e.stack ?? e.message}`);
+  process.exit(1);
+});

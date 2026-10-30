@@ -60,7 +60,7 @@ describe('withCompanion', () => {
     expect(withCompanion({ ...noCors, level: 'unlikely' }, ready, 'auto').level).toBe('possible');
     const off = withCompanion(noCors, offline, 'auto');
     expect(off.level).toBe('possible');
-    expect(off.notes.at(-1)).toMatch(/not running or not paired/);
+    expect(off.notes.at(-1)).toMatch(/npm run setup/);
     expect(withCompanion(noCors, ready, 'direct')).toBe(noCors);
   });
 

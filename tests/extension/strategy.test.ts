@@ -9,7 +9,7 @@ import {
   type AttemptRecord,
   type StrategyState,
 } from '../../apps/extension/src/lib/strategy.ts';
-import { withReceiverDetail } from '../../apps/controller/src/errors.ts';
+import { withReceiverDetail } from '../../apps/companion/src/cast/errors.ts';
 import { candidate, video } from './helpers.ts';
 
 const ok: CastabilityAssessment = { level: 'likely', engine: 'direct', notes: [] };
@@ -115,7 +115,7 @@ describe('strategy: streams and giving up', () => {
     );
     expect(describeAttempts(s)).toEqual([
       '1. Direct to the Chromecast: The Chromecast could not download the playlist.',
-      '2. Through the local companion (FFmpeg found nothing to convert): playing ✓',
+      '2. Relayed by this computer (nothing to convert): playing ✓',
     ]);
   });
 });

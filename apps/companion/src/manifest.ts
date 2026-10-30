@@ -14,16 +14,37 @@ export function toProxyUrl(mediaBase: string, sessionId: string, upstream: strin
 export interface ParsedProxyPath {
   sessionId: string;
   upstream: string;
+  /** The receiver must get these bytes as this media type (see withMediaHint). */
+  as?: 'mp4' | 'ts';
 }
 
 const PROXY_PATH = /^\/m\/([A-Za-z0-9_-]{16,})\/(https?)\/([^/?#]+)((?:\/|\?)[^#]*)?$/;
+const MEDIA_HINT = /~castit\.(mp4|ts)(?=\?|$)/;
 
 /** Parses a request path (req.url) back into session id + upstream URL. */
 export function parseProxyPath(path: string): ParsedProxyPath | null {
   const m = PROXY_PATH.exec(path);
   if (!m) return null;
-  const rest = m[4] ?? '/';
-  return { sessionId: m[1]!, upstream: `${m[2]}://${m[3]}${rest.startsWith('?') ? `/${rest}` : rest}` };
+  let rest = m[4] ?? '/';
+  const hint = MEDIA_HINT.exec(rest);
+  if (hint) rest = rest.slice(0, hint.index) + rest.slice(hint.index + hint[0].length);
+  return {
+    sessionId: m[1]!,
+    upstream: `${m[2]}://${m[3]}${rest.startsWith('?') ? `/${rest}` : rest}`,
+    ...(hint ? { as: hint[1] as 'mp4' | 'ts' } : {}),
+  };
+}
+
+/**
+ * Some sites disguise video segments as images or text (seg-1.png served as image/png) so CDNs
+ * cache them. Cast receivers pick a parser from the name and type, so such segments get a
+ * `~castit.mp4` / `~castit.ts` suffix that the relay strips again and answers with the real type.
+ */
+export const DISGUISED_SEGMENT = /\.(png|jpe?g|gif|webp|bmp|ico|svg|css|js|html?|txt|json)$/i;
+
+export function withMediaHint(proxyUrl: string, as: 'mp4' | 'ts'): string {
+  const q = proxyUrl.indexOf('?');
+  return q < 0 ? `${proxyUrl}~castit.${as}` : `${proxyUrl.slice(0, q)}~castit.${as}${proxyUrl.slice(q)}`;
 }
 
 /** Maps an absolute URL to its proxied form; returns null to leave a reference untouched. */
@@ -51,17 +72,56 @@ function mapReference(ref: string, base: string, map: UrlMapper, onlyAbsolute: b
  * All references are rewritten (not just absolute ones) so playlists work even when the
  * receiver resolves them against a redirected URL.
  */
-export function rewriteHls(text: string, baseUrl: string, map: UrlMapper): string {
-  return text
-    .split(/(\r?\n)/)
+export function rewriteHls(text: string, baseUrl: string, map: UrlMapper, keepVariant?: (attributes: string) => boolean): string {
+  // Media playlists: disguised segments (and their init segment) get a media type hint.
+  const segmentType = /#EXT-X-MAP/i.test(text) ? 'mp4' : 'ts';
+  const segmentMap: UrlMapper = /#EXTINF/i.test(text)
+    ? (absolute) => {
+        const out = map(absolute);
+        return out && DISGUISED_SEGMENT.test(absolute.pathname) ? withMediaHint(out, segmentType) : out;
+      }
+    : map;
+  const lines = keepVariant ? dropVariants(text.split(/(\r?\n)/), keepVariant) : text.split(/(\r?\n)/);
+  return lines
     .map((line) => {
       if (line === '\n' || line === '\r\n' || line.trim() === '') return line;
       if (line.trimStart().startsWith('#')) {
-        return line.replace(/URI="([^"]*)"/g, (_, uri: string) => `URI="${mapReference(uri, baseUrl, map, false)}"`);
+        const uriMap = /^#EXT-X-(MAP|PART):/i.test(line.trimStart()) ? segmentMap : map;
+        return line.replace(/URI="([^"]*)"/g, (_, uri: string) => `URI="${mapReference(uri, baseUrl, uriMap, false)}"`);
       }
-      return mapReference(line, baseUrl, map, false);
+      return mapReference(line, baseUrl, segmentMap, false);
     })
     .join('');
+}
+
+/**
+ * Leaves out master playlist variants the receiver can't play (e.g. a 4K HEVC HDR variant next
+ * to H.264 ones), so it can't pick one and fail. Keeps everything when nothing would be left.
+ */
+function dropVariants(lines: string[], keep: (attributes: string) => boolean): string[] {
+  const drop = new Set<number>();
+  let variants = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.trimStart();
+    if (/^#EXT-X-I-FRAME-STREAM-INF:/i.test(line)) {
+      if (!keep(line)) drop.add(i);
+      continue;
+    }
+    if (!/^#EXT-X-STREAM-INF:/i.test(line)) continue;
+    variants++;
+    if (keep(line)) continue;
+    drop.add(i);
+    // The variant's URI is the next line that is neither blank nor a tag.
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]!.trim();
+      if (!next) continue;
+      if (!next.startsWith('#')) drop.add(j);
+      if (!next.startsWith('#') || /^#EXT-X-STREAM-INF:/i.test(next)) break;
+    }
+  }
+  const dropped = [...drop].filter((i) => /^#EXT-X-STREAM-INF:/i.test(lines[i]!.trimStart())).length;
+  if (dropped === 0 || dropped === variants) return lines;
+  return lines.filter((_, i) => !drop.has(i));
 }
 
 const XML_DECODE: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" };

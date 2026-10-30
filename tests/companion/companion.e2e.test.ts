@@ -1,4 +1,4 @@
-// End-to-end: the real companion servers relaying from a local mock upstream.
+// End-to-end: the real companion media server relaying from a local mock upstream.
 import { mkdtempSync, rmSync } from 'node:fs';
 import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CreateSessionResponse } from '@castit/shared';
+import type { CreateSessionRequest, CreateSessionResponse } from '@castit/shared';
 import { startCompanion, type RunningCompanion } from '../../apps/companion/src/server.ts';
 
 const FILE_SIZE = 1_000_000;
@@ -32,6 +32,21 @@ function upstreamHandler(req: IncomingMessage, res: ServerResponse): void {
     case '/hls/720p/seg-0.ts':
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': '4' });
       res.end(Buffer.from([0x47, 1, 2, 3]));
+      return;
+    case '/disguised/master.m3u8':
+      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+      res.end(
+        '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1280x534,CODECS="avc1.64001F,mp4a.40.2"\n720p/media.m3u8\n' +
+          '#EXT-X-STREAM-INF:BANDWIDTH=9000,RESOLUTION=3840x1604,CODECS="hvc1.2.4.L153.B0,mp4a.40.2"\n2160p/media.m3u8\n',
+      );
+      return;
+    case '/disguised/720p/media.m3u8':
+      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+      res.end('#EXTM3U\n#EXT-X-MAP:URI="init.png"\n#EXTINF:4,\nseg-0.png?sig=1\n#EXT-X-ENDLIST\n');
+      return;
+    case '/disguised/720p/seg-0.png':
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(Buffer.from('....styp'));
       return;
     case '/sniff':
       // Manifest served with a generic type, no extension, gzip-encoded.
@@ -83,20 +98,8 @@ const tempDir = (prefix: string) => {
   tempDirs.push(dir);
   return dir;
 };
-let apiKey = '';
-const json = { 'content-type': 'application/json' };
-
-async function api(path: string, init: RequestInit = {}, key = apiKey): Promise<Response> {
-  return fetch(`${companion.controlUrl}${path}`, {
-    ...init,
-    headers: { ...json, ...(key ? { authorization: `Bearer ${key}` } : {}), ...(init.headers ?? {}) },
-  });
-}
-
-async function session(url: string, kind = 'hls', context: Record<string, unknown> = {}): Promise<CreateSessionResponse> {
-  const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ url, kind, context }) });
-  expect(res.status).toBe(200);
-  return (await res.json()) as CreateSessionResponse;
+function session(url: string, kind = 'hls', context: Record<string, unknown> = {}): Promise<CreateSessionResponse> {
+  return companion.createSession({ url, kind, context } as CreateSessionRequest);
 }
 
 /** GET via a specific local address so the media server sees different clients. */
@@ -119,7 +122,6 @@ beforeAll(async () => {
   up = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
 
   companion = await startCompanion({
-    controlPort: 0,
     mediaPort: 0,
     mediaListenHost: '::',
     publicHost: '127.0.0.1',
@@ -131,10 +133,6 @@ beforeAll(async () => {
     // Treat every client as a remote device so device binding can be exercised from loopback.
     isLocalClient: () => false,
   });
-
-  const code = companion.pairing.issue();
-  const res = await api('/api/pair', { method: 'POST', body: JSON.stringify({ code }) }, '');
-  apiKey = ((await res.json()) as { apiKey: string }).apiKey;
 });
 
 afterAll(async () => {
@@ -143,36 +141,17 @@ afterAll(async () => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-describe('control API', () => {
-  it('reports health and requires pairing for sessions', async () => {
-    const health = await (await api('/api/health', {}, '')).json();
-    expect(health).toMatchObject({ name: 'castit-companion', paired: true, protocol: 1, ffmpeg: false });
-    const res = await api('/api/sessions', { method: 'POST', body: '{}' }, 'wrong-key');
-    expect(res.status).toBe(401);
-  });
-
-  it('rejects wrong pairing codes', async () => {
-    const res = await api('/api/pair', { method: 'POST', body: JSON.stringify({ code: '000-000' }) }, '');
-    expect(res.status).toBe(401);
-  });
-
-  it('refuses browser pages and rebinding hosts', async () => {
-    expect((await api('/api/health', { headers: { origin: 'https://evil.example' } }, '')).status).toBe(403);
-    const port = new URL(companion.controlUrl).port;
-    const status = await new Promise<number>((resolve) =>
-      http.get({ host: '127.0.0.1', port, path: '/api/health', headers: { host: `evil.example:${port}` } }, (r) => {
-        r.resume();
-        resolve(r.statusCode ?? 0);
-      }),
-    );
-    expect(status).toBe(403);
-  });
-
+describe('sessions', () => {
   it('lists sessions without query strings', async () => {
     await session(`${up}/hls/master.m3u8?sig=secret`);
-    const list = (await (await api('/api/sessions')).json()) as Array<{ upstream: string }>;
+    const list = companion.sessions.list();
     expect(list.some((s) => s.upstream.endsWith('/hls/master.m3u8?…'))).toBe(true);
     expect(JSON.stringify(list)).not.toContain('secret');
+  });
+
+  it('drops anything but Referer, Origin and User-Agent from the context', async () => {
+    const s = await session(`${up}/movie.mp4`, 'progressive', { referer: 'https://a.example/', cookie: 'x=1', origin: 'https://a.example/path' });
+    expect(companion.sessions.peek(s.sessionId)?.context).toEqual({ referer: 'https://a.example/', origin: undefined, userAgent: undefined });
   });
 });
 
@@ -216,6 +195,22 @@ describe('HLS relay', () => {
     const res = await fetch(s.mediaUrl, { method: 'OPTIONS' });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-private-network')).toBe('true');
+  });
+});
+
+describe('disguised HLS', () => {
+  it('leaves out variants the TV cannot play and serves image-named segments as video', async () => {
+    const s = await companion.createSession({ url: `${up}/disguised/master.m3u8`, kind: 'hls', context: {}, profile: 'compat' });
+    const master = await (await fetch(s.mediaUrl)).text();
+    expect(master).toContain('720p/media.m3u8');
+    expect(master).not.toContain('2160p');
+    const media = await (await fetch(master.split('\n').find((l) => l.startsWith('http'))!)).text();
+    expect(media).toMatch(/URI="http[^"]*\/init\.png~castit\.mp4"/);
+    const segment = media.split('\n').find((l) => l.startsWith('http'))!;
+    expect(segment).toMatch(/seg-0\.png~castit\.mp4\?sig=1$/);
+    const res = await fetch(segment);
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+    expect(await res.text()).toBe('....styp');
   });
 });
 
@@ -269,11 +264,12 @@ describe('progressive relay', () => {
 
 describe('conversion without FFmpeg', () => {
   it('relays unchanged and explains why', async () => {
-    const res = await api('/api/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ url: `${up}/movie.mp4`, kind: 'progressive', context: {}, transcode: { mode: 'force', profile: 'compat', quality: 'auto' } }),
+    const body = await companion.createSession({
+      url: `${up}/movie.mp4`,
+      kind: 'progressive',
+      context: {},
+      transcode: { mode: 'force', profile: 'compat', quality: 'auto' },
     });
-    const body = (await res.json()) as CreateSessionResponse;
     expect(body.delivery).toBe('relay');
     expect(body.analysisError).toMatch(/FFmpeg not found/);
   });
@@ -288,7 +284,7 @@ describe('session security', () => {
 
   it('returns 404 for unknown and deleted sessions', async () => {
     const s = await session(`${up}/movie.mp4`, 'progressive');
-    expect((await api(`/api/sessions/${s.sessionId}`, { method: 'DELETE' })).status).toBe(204);
+    companion.deleteSession(s.sessionId);
     expect((await fetch(s.mediaUrl)).status).toBe(404);
     expect((await fetch(s.mediaUrl.replace(s.sessionId, 'x'.repeat(32)))).status).toBe(404);
   });
@@ -301,7 +297,6 @@ describe('session security', () => {
 
   it('blocks private upstreams unless explicitly allowed', async () => {
     const strict = await startCompanion({
-      controlPort: 0,
       mediaPort: 0,
       mediaListenHost: '127.0.0.1',
       publicHost: '127.0.0.1',
@@ -312,16 +307,9 @@ describe('session security', () => {
       log: () => undefined,
     });
     try {
-      const code = strict.pairing.issue();
-      const pair = await fetch(`${strict.controlUrl}/api/pair`, { method: 'POST', headers: json, body: JSON.stringify({ code }) });
-      const key = ((await pair.json()) as { apiKey: string }).apiKey;
-      const res = await fetch(`${strict.controlUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { ...json, authorization: `Bearer ${key}` },
-        body: JSON.stringify({ url: `${up}/movie.mp4`, kind: 'progressive', context: {} }),
+      await expect(strict.createSession({ url: `${up}/movie.mp4`, kind: 'progressive', context: {} })).rejects.toMatchObject({
+        code: 'BLOCKED_ADDRESS',
       });
-      expect(res.status).toBe(400);
-      expect(((await res.json()) as { code: string }).code).toBe('BLOCKED_ADDRESS');
     } finally {
       await strict.close();
     }

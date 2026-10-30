@@ -10,7 +10,6 @@ export function formatTime(seconds: number | null | undefined): string {
 
 export const PHASE_LABELS: Record<string, string> = {
   idle: 'Idle',
-  'awaiting-device': 'Choose a device',
   connecting: 'Connecting…',
   loading: 'Loading…',
   buffering: 'Buffering…',

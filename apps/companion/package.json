@@ -1,15 +1,14 @@
 {
   "name": "@castit/companion",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
-  "description": "Castit local streaming companion: relays authorised media to a Chromecast over the LAN.",
+  "description": "Castit companion: finds Cast devices, casts to them and relays streams the TV cannot fetch itself. Runs as Chrome native messaging host.",
   "engines": {
     "node": ">=22.18"
   },
   "scripts": {
-    "start": "node src/index.ts",
-    "dev": "node --watch src/index.ts"
+    "build": "vite build --config vite.config.ts"
   },
   "dependencies": {
     "@castit/shared": "*"

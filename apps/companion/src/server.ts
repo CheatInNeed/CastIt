@@ -1,36 +1,26 @@
-// Two HTTP servers:
-//   control (127.0.0.1 only): health, pairing, session management, for the extension.
-//   media   (LAN):            /m/<session>/… streaming endpoints, for the Chromecast.
-import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+// The companion's core: the LAN media server the Chromecast fetches relayed/converted streams
+// from (/m/<session>/…, /t/<session>/…), plus the session operations the extension calls through
+// the native messaging host (index.ts).
+import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import {
-  COMPANION_PROTOCOL,
-  type CompanionErrorBody,
-  type CompanionHealth,
-  type CreateSessionRequest,
-  type CreateSessionResponse,
-  type UpstreamCheck,
-  type UpstreamContext,
+import type {
+  CompanionErrorCode,
+  CreateSessionRequest,
+  CreateSessionResponse,
+  UpstreamCheck,
+  UpstreamContext,
 } from '@castit/shared';
-import { PairingStore, type CompanionSettings } from './config.ts';
+import type { CompanionSettings } from './config.ts';
 import { detectFfmpeg, probeMedia, type FfmpegCapabilities } from './ffmpeg.ts';
 import { toProxyUrl } from './manifest.ts';
-import { planMedia, summarizePlan } from './plan.ts';
-import {
-  controlRequestAllowed,
-  PairingManager,
-  randomToken,
-  redactUrl,
-  UpstreamBlockedError,
-  validateUpstreamUrl,
-} from './security.ts';
+import { planMedia, RECEIVER_CAPABILITIES, summarizePlan } from './plan.ts';
+import { redactUrl, UpstreamBlockedError, validateUpstreamUrl } from './security.ts';
 import { SessionStore, type SessionStoreOptions } from './sessions.ts';
 import { handleMediaRequest } from './streaming.ts';
 import { JobManager, sweepStaleJobDirs } from './transcoder.ts';
 import { requestUpstream, upstreamHeaders } from './upstream.ts';
 
-export const VERSION = '1.0.0';
-const MAX_BODY_BYTES = 64 * 1024;
+export const VERSION = '1.1.0';
 
 export interface CompanionOptions extends CompanionSettings {
   sessionOptions?: Partial<SessionStoreOptions>;
@@ -41,46 +31,23 @@ export interface CompanionOptions extends CompanionSettings {
 }
 
 export interface RunningCompanion {
-  controlUrl: string;
   mediaBaseUrl: string;
-  pairing: PairingManager;
-  store: PairingStore;
   sessions: SessionStore;
   jobs: JobManager;
   ffmpeg: FfmpegCapabilities;
+  /** Opens a relay session for an upstream stream (and starts FFmpeg when conversion is asked for and needed). */
+  createSession(body: CreateSessionRequest): Promise<CreateSessionResponse>;
+  deleteSession(sessionId: string): void;
   /** Synchronous last-resort cleanup for process exit: kills FFmpeg, deletes job directories. */
   closeSync(): void;
   close(): Promise<void>;
 }
 
-class HttpError extends Error {
-  readonly status: number;
-  readonly code: CompanionErrorBody['code'];
-  constructor(status: number, code: CompanionErrorBody['code'], message: string) {
+export class CompanionRequestError extends Error {
+  readonly code: CompanionErrorCode;
+  constructor(code: CompanionErrorCode, message: string) {
     super(message);
-    this.status = status;
     this.code = code;
-  }
-}
-
-function json(res: ServerResponse, status: number, body: unknown): void {
-  const data = Buffer.from(JSON.stringify(body));
-  res.writeHead(status, { 'content-type': 'application/json', 'content-length': String(data.length), 'cache-control': 'no-store' });
-  res.end(data);
-}
-
-async function readJson<T>(req: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'BAD_REQUEST', 'Request body too large.');
-    chunks.push(chunk as Buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as T;
-  } catch {
-    throw new HttpError(400, 'BAD_REQUEST', 'Invalid JSON.');
   }
 }
 
@@ -119,8 +86,6 @@ async function checkUpstream(url: URL, kind: string, context: UpstreamContext, a
 
 export async function startCompanion(options: CompanionOptions): Promise<RunningCompanion> {
   const log = options.log ?? ((m: string) => console.log(`[castit] ${m}`));
-  const store = new PairingStore(options.configDir);
-  const pairing = new PairingManager();
   const sessions = new SessionStore(options.sessionOptions);
   const jobs = new JobManager();
   sessions.onDelete = (id) => void jobs.close(id);
@@ -137,94 +102,31 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
     });
   });
 
-  const control = http.createServer((req, res) => {
-    handleControl(req, res).catch((e) => {
-      if (e instanceof HttpError) return json(res, e.status, { error: e.message, code: e.code } satisfies CompanionErrorBody);
-      log(`control handler failed: ${(e as Error).message}`);
-      json(res, 500, { error: 'Internal error', code: 'INTERNAL' } satisfies CompanionErrorBody);
-    });
-  });
-
-  const requireAuth = (req: IncomingMessage) => {
-    const auth = req.headers.authorization ?? '';
-    const key = /^Bearer\s+(.+)$/i.exec(auth)?.[1];
-    if (!store.verify(key)) throw new HttpError(401, 'UNAUTHORIZED', 'Not paired with this companion.');
-  };
-
-  async function handleControl(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!controlRequestAllowed(req.headers.host, req.headers.origin, controlPort)) {
-      throw new HttpError(403, 'FORBIDDEN', 'Requests must come from the Castit extension on this computer.');
+  async function createSession(body: CreateSessionRequest): Promise<CreateSessionResponse> {
+    let upstream: URL;
+    try {
+      upstream = validateUpstreamUrl(String(body.url ?? ''), options.allowPrivateUpstreams);
+    } catch (e) {
+      throw new CompanionRequestError('BLOCKED_ADDRESS', (e as Error).message);
     }
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const route = `${req.method} ${url.pathname}`;
-
-    if (route === 'GET /api/health') {
-      const body: CompanionHealth = {
-        name: 'castit-companion',
-        version: VERSION,
-        protocol: COMPANION_PROTOCOL,
-        paired: store.paired,
-        mediaBaseUrl,
-        ffmpeg: ffmpeg.available,
-        ffmpegVersion: ffmpeg.version,
-        hwEncoder: ffmpeg.available && ffmpeg.encoder.hardware ? ffmpeg.encoder.name : null,
-      };
-      return json(res, 200, body);
+    const kind = ['hls', 'dash', 'progressive'].includes(body.kind) ? body.kind : 'unknown';
+    const context = sanitizeContext(body.context);
+    const check = await checkUpstream(upstream, kind, context, options.allowPrivateUpstreams);
+    if (check.error && /private or reserved|local host name/.test(check.error)) {
+      throw new CompanionRequestError('BLOCKED_ADDRESS', check.error);
     }
-
-    if (route === 'POST /api/pair') {
-      const body = await readJson<{ code?: string; label?: string }>(req);
-      if (!pairing.verify(String(body.code ?? ''))) {
-        throw new HttpError(401, 'PAIRING_FAILED', 'Wrong or expired pairing code. Start the companion with --pair for a new code.');
-      }
-      const apiKey = randomToken(32);
-      store.add(apiKey, String(body.label ?? 'Castit extension'));
-      log('paired a new browser');
-      return json(res, 200, { apiKey });
-    }
-
-    if (route === 'POST /api/sessions') {
-      requireAuth(req);
-      const body = await readJson<CreateSessionRequest>(req);
-      let upstream: URL;
-      try {
-        upstream = validateUpstreamUrl(String(body.url ?? ''), options.allowPrivateUpstreams);
-      } catch (e) {
-        throw new HttpError(400, 'BLOCKED_ADDRESS', (e as Error).message);
-      }
-      const kind = ['hls', 'dash', 'progressive'].includes(body.kind) ? body.kind : 'unknown';
-      const context = sanitizeContext(body.context);
-      const check = await checkUpstream(upstream, kind, context, options.allowPrivateUpstreams);
-      if (check.error && /private or reserved|local host name/.test(check.error)) {
-        throw new HttpError(400, 'BLOCKED_ADDRESS', check.error);
-      }
-      const session = sessions.create(upstream, kind, context);
-      log(`session ${session.id.slice(0, 6)}… → ${redactUrl(upstream.href)} (check: ${check.status ?? check.error})`);
-      const response: CreateSessionResponse = {
-        sessionId: session.id,
-        mediaUrl: toProxyUrl(mediaBaseUrl, session.id, upstream),
-        expiresAt: sessions.idleExpiry(session),
-        check,
-        delivery: 'relay',
-      };
-      if (body.transcode && check.ok) await prepareConversion(session.id, upstream, kind, body.transcode, response);
-      return json(res, 200, response);
-    }
-
-    if (route === 'GET /api/sessions') {
-      requireAuth(req);
-      return json(res, 200, sessions.list());
-    }
-
-    const del = /^DELETE \/api\/sessions\/([A-Za-z0-9_-]+)$/.exec(route);
-    if (del) {
-      requireAuth(req);
-      sessions.delete(del[1]!);
-      res.writeHead(204).end();
-      return;
-    }
-
-    throw new HttpError(404, 'NOT_FOUND', 'Unknown endpoint.');
+    const session = sessions.create(upstream, kind, context);
+    if (body.profile && body.profile in RECEIVER_CAPABILITIES) session.profile = body.profile;
+    log(`session ${session.id.slice(0, 6)}… → ${redactUrl(upstream.href)} (check: ${check.status ?? check.error})`);
+    const response: CreateSessionResponse = {
+      sessionId: session.id,
+      mediaUrl: toProxyUrl(mediaBaseUrl, session.id, upstream),
+      expiresAt: sessions.idleExpiry(session),
+      check,
+      delivery: 'relay',
+    };
+    if (body.transcode && check.ok) await prepareConversion(session.id, upstream, kind, body.transcode, response);
+    return response;
   }
 
   /**
@@ -283,26 +185,21 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
     log(`${plan.action} ${sessionId.slice(0, 6)}…: ${plan.details.join('; ')}`);
   }
 
-  const listen = (server: Server, port: number, host: string) =>
-    new Promise<number>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(port, host, () => resolve((server.address() as AddressInfo).port));
-    });
-
-  const controlPort = await listen(control, options.controlPort, '127.0.0.1');
-  const mediaPort = await listen(media, options.mediaPort, options.mediaListenHost);
+  const mediaPort = await new Promise<number>((resolve, reject) => {
+    media.once('error', reject);
+    media.listen(options.mediaPort, options.mediaListenHost, () => resolve((media.address() as AddressInfo).port));
+  });
   const mediaBaseUrl = `http://${options.publicHost.includes(':') ? `[${options.publicHost}]` : options.publicHost}:${mediaPort}`;
   const sweeper = setInterval(() => sessions.sweep(), 60_000);
   sweeper.unref();
 
   return {
-    controlUrl: `http://127.0.0.1:${controlPort}`,
     mediaBaseUrl,
-    pairing,
-    store,
     sessions,
     jobs,
     ffmpeg,
+    createSession,
+    deleteSession: (sessionId) => sessions.delete(sessionId),
     closeSync() {
       jobs.closeAllNow();
     },
@@ -310,9 +207,8 @@ export async function startCompanion(options: CompanionOptions): Promise<Running
       clearInterval(sweeper);
       sessions.closeAll();
       await jobs.closeAll();
-      control.closeAllConnections();
       media.closeAllConnections();
-      await Promise.all([new Promise((r) => control.close(r)), new Promise((r) => media.close(r))]);
+      await new Promise((r) => media.close(r));
     },
   };
 }

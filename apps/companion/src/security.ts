@@ -1,5 +1,5 @@
-// Security primitives: tokens, pairing, SSRF protection and request origin checks.
-import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+// Security primitives: tokens, SSRF protection and client address checks.
+import { randomBytes } from 'node:crypto';
 import dns from 'node:dns';
 import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
@@ -7,61 +7,6 @@ import { networkInterfaces } from 'node:os';
 /** URL-safe random token (default 256 bits). */
 export function randomToken(bytes = 32): string {
   return randomBytes(bytes).toString('base64url');
-}
-
-export function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-/** Constant-time comparison of a secret against a stored SHA-256 hash. */
-export function matchesHash(secret: string, hash: string): boolean {
-  const a = Buffer.from(sha256(secret), 'hex');
-  const b = Buffer.from(hash, 'hex');
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-// ---------------------------------------------------------------- pairing
-
-/**
- * One short-lived numeric code shown in the companion's terminal. The user types it into the
- * Castit popup, which exchanges it for a long-lived API key. Few attempts per code, then the
- * code is burned and a new one must be issued from the terminal.
- */
-export class PairingManager {
-  private code: string | null = null;
-  private expiresAt = 0;
-  private attempts = 0;
-  private readonly ttlMs: number;
-  private readonly maxAttempts: number;
-
-  constructor(ttlMs = 10 * 60_000, maxAttempts = 5) {
-    this.ttlMs = ttlMs;
-    this.maxAttempts = maxAttempts;
-  }
-
-  issue(now = Date.now()): string {
-    const digits = String(randomInt(0, 1_000_000)).padStart(6, '0');
-    this.code = digits;
-    this.expiresAt = now + this.ttlMs;
-    this.attempts = 0;
-    return `${digits.slice(0, 3)}-${digits.slice(3)}`;
-  }
-
-  get active(): boolean {
-    return this.code !== null && Date.now() < this.expiresAt;
-  }
-
-  verify(input: string, now = Date.now()): boolean {
-    if (!this.code || now >= this.expiresAt) {
-      this.code = null;
-      return false;
-    }
-    this.attempts++;
-    const candidate = String(input).replace(/\D/g, '');
-    const ok = candidate.length === 6 && timingSafeEqual(Buffer.from(candidate), Buffer.from(this.code));
-    if (ok || this.attempts >= this.maxAttempts) this.code = null;
-    return ok;
-  }
 }
 
 // ---------------------------------------------------------------- SSRF protection
@@ -181,21 +126,6 @@ export function guardedLookup(allowPrivate: boolean) {
       else callback(null, allowed[0]!.address, allowed[0]!.family);
     });
   };
-}
-
-// ---------------------------------------------------------------- control API request checks
-
-/**
- * Defeats DNS-rebinding and drive-by requests from web pages against the localhost control API:
- * the Host must be the loopback address we listen on, and a browser Origin, if present, must be
- * an extension.
- */
-export function controlRequestAllowed(host: string | undefined, origin: string | undefined, port: number): boolean {
-  const okHosts = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
-  if (!host || !okHosts.includes(host.toLowerCase())) return false;
-  if (origin && origin !== 'null' && !origin.startsWith('chrome-extension://')) return false;
-  if (origin === 'null') return false;
-  return true;
 }
 
 /** Normalises ::ffff:1.2.3.4 to 1.2.3.4. */

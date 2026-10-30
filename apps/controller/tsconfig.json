@@ -1,7 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "types": ["chrome", "chromecast-caf-sender", "vite/client"]
-  },
-  "include": ["src"]
-}

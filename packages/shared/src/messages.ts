@@ -1,19 +1,14 @@
-// Message protocol between the extension contexts and the controller page.
-import type { CompanionStatus, EngineMode, TranscodeSettings } from './companion.ts';
+// Message protocol between the extension contexts (background, content scripts, popup).
+import type { CastDeviceInfo, CompanionStatus, EngineMode, TranscodeSettings } from './companion.ts';
 import type {
   CastPhase,
   CastabilityAssessment,
   CastError,
-  CastRequest,
   CastStatus,
   RankedCandidate,
   RemoteCommand,
   VideoElementInfo,
 } from './types.ts';
-
-/** Name of the long-lived port the controller page opens to the extension. */
-export const CONTROLLER_PORT_NAME = 'castit-controller';
-export const PROTOCOL_VERSION = 1;
 
 // ---------------------------------------------------------------- content ↔ background
 
@@ -62,6 +57,8 @@ export type BackgroundToContent =
   /** Pause local playback because the receiver took over. */
   | { type: 'content/pause-local' }
   | { type: 'content/highlight'; videoKey: string | null }
+  /** Show or hide Castit's panel over the page (top frame only); token authenticates the panel. */
+  | { type: 'content/toggle-panel'; token: string }
   /** The TV is playing: turn the given (or main) <video> into a remote control. */
   | { type: 'content/sync-start'; requestId: string; videoKey?: string; deviceName?: string }
   | { type: 'content/sync-state'; requestId: string; state: SyncReceiverState }
@@ -97,9 +94,10 @@ export interface PopupState {
   /** EME key systems a player on the page attached (DRM in use), e.g. com.widevine.alpha. */
   drmKeySystems: string[];
   castStatus: CastStatus | null;
-  controllerConnected: boolean;
-  controllerUrl: string;
   companion: CompanionStatus;
+  /** TVs found on the network, and the one Castit casts to. */
+  devices: CastDeviceInfo[];
+  deviceId?: string;
   engineMode: EngineMode;
   transcodeSettings: TranscodeSettings;
   /** Background progress/failure note, e.g. an automatic companion fallback. */
@@ -115,11 +113,9 @@ export interface PopupState {
 
 export type PopupRequest =
   | { type: 'popup/get-state'; tabId: number }
-  | { type: 'popup/cast'; tabId: number; candidateId: string }
+  | { type: 'popup/cast'; tabId: number; candidateId: string; deviceId?: string }
   | { type: 'popup/command'; command: RemoteCommand }
-  | { type: 'popup/open-controller' }
-  | { type: 'popup/companion-pair'; code: string }
-  | { type: 'popup/companion-forget' }
+  | { type: 'popup/set-device'; deviceId: string }
   | { type: 'popup/set-engine'; mode: EngineMode }
   | { type: 'popup/set-transcode'; settings: TranscodeSettings }
   | { type: 'popup/cast-cancel' }
@@ -137,31 +133,6 @@ export interface CastProgress {
   final?: CastError;
 }
 
-export type CompanionPairResult = { ok: true; status: CompanionStatus } | { ok: false; error: string };
-
-export type PopupCastResponse =
-  | { ok: true; controller: 'loading' | 'opened' }
-  | { ok: false; error: CastError };
+export type PopupCastResponse = { ok: true } | { ok: false; error: CastError };
 
 export type CommandResponse = { ok: true } | { ok: false; error: CastError };
-
-// ---------------------------------------------------------------- controller ↔ background
-
-export type ControllerToBackground =
-  | { type: 'controller/hello'; token: string; version: number }
-  | { type: 'controller/status'; status: CastStatus }
-  | { type: 'controller/load-result'; requestId: string; ok: true }
-  | { type: 'controller/load-result'; requestId: string; ok: false; error: CastError }
-  /** Playback broke or froze after it had started (position in seconds, for resuming). */
-  | { type: 'controller/playback-problem'; requestId: string; error: CastError; position: number };
-
-export type BackgroundToController =
-  /**
-   * pending: a cast waiting to be loaded. active: the cast that was playing when the controller
-   * last disconnected (tab closed, worker restarted); a reopened controller adopts it if the TV
-   * is still playing that stream, so remote control and page sync continue.
-   */
-  | { type: 'controller/welcome'; pending: CastRequest | null; active?: CastRequest | null }
-  | { type: 'controller/rejected'; reason: string }
-  | { type: 'controller/load'; request: CastRequest }
-  | { type: 'controller/command'; command: RemoteCommand };

@@ -52,6 +52,33 @@ export const RECEIVER_CAPABILITIES: Record<ReceiverProfile, ReceiverCapabilities
   },
 };
 
+const CODEC_FAMILY: Array<[RegExp, string]> = [
+  [/^(avc1|avc3)/i, 'h264'],
+  [/^(hvc1|hev1|dvh1|dvhe)/i, 'hevc'],
+  [/^av01/i, 'av1'],
+  [/^(vp09|vp9)/i, 'vp9'],
+  [/^vp8/i, 'vp8'],
+  [/^ac-3/i, 'ac3'],
+  [/^ec-3/i, 'eac3'],
+];
+
+/**
+ * Whether a receiver can play an HLS variant, judged from its #EXT-X-STREAM-INF attributes
+ * (CODECS and RESOLUTION). Unknown codecs and missing attributes count as playable.
+ */
+export function variantPlayable(attributes: string, profile: ReceiverProfile): boolean {
+  const caps = RECEIVER_CAPABILITIES[profile];
+  const height = Number(/RESOLUTION=\d+x(\d+)/i.exec(attributes)?.[1]);
+  if (height > caps.maxHeight) return false;
+  const codecs = /CODECS="([^"]*)"/i.exec(attributes)?.[1]?.split(',') ?? [];
+  return codecs.every((codec) => {
+    const family = CODEC_FAMILY.find(([re]) => re.test(codec.trim()))?.[1];
+    if (!family) return true;
+    if (family === 'ac3' || family === 'eac3') return caps.audio.includes(family);
+    return family in caps.video;
+  });
+}
+
 const QUALITY_HEIGHT: Record<TranscodeOptions['quality'], number | undefined> = {
   auto: undefined,
   '1080p': 1080,

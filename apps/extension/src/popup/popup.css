@@ -1,29 +1,45 @@
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
+  /* Translucent surfaces: the page panel blurs what is behind it (see lib/panel.ts). */
+  --bg: rgba(246, 246, 248, 0.72);
+  --card: rgba(255, 255, 255, 0.6);
+  --field: rgba(255, 255, 255, 0.7);
   --text: #111827;
   --muted: #6b7280;
-  --border: #e5e7eb;
+  --border: rgba(17, 24, 39, 0.1);
   --accent: #2563eb;
   --accent-text: #ffffff;
   --ok: #15803d;
   --warn: #b45309;
   --bad: #b91c1c;
-  --error-bg: #fef2f2;
+  --error-bg: rgba(254, 226, 226, 0.7);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1115;
-    --card: #181b21;
-    --text: #e5e7eb;
+    --bg: rgba(28, 28, 32, 0.7);
+    --card: rgba(255, 255, 255, 0.07);
+    --field: rgba(255, 255, 255, 0.08);
+    --text: #f3f4f6;
     --muted: #9ca3af;
-    --border: #2a2f38;
+    --border: rgba(255, 255, 255, 0.12);
     --accent: #3b82f6;
     --ok: #4ade80;
     --warn: #fbbf24;
     --bad: #f87171;
-    --error-bg: #2a1515;
+    --error-bg: rgba(127, 29, 29, 0.35);
+  }
+}
+
+/* Chrome's own popup window can't be see-through: use solid colours there. */
+html:not(.embedded) {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not(.embedded) {
+    --bg: #17181c;
+    --card: #202127;
   }
 }
 
@@ -36,13 +52,22 @@
   display: none !important;
 }
 
+html.embedded {
+  background: transparent;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
-  width: 380px;
-  padding: 10px;
+  width: 340px;
+  padding: 12px;
   background: var(--bg);
   color: var(--text);
   font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html.embedded body {
+  border-radius: 18px;
 }
 
 button {
@@ -69,7 +94,12 @@ button:disabled {
 }
 
 .bar {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.tight {
+  gap: 4px;
+  min-width: 0;
 }
 
 .brand {
@@ -77,47 +107,46 @@ button:disabled {
   font-size: 15px;
 }
 
+.ghost {
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.ghost:hover,
+.ghost.on {
+  background: var(--card);
+  color: var(--text);
+}
+
 .pill {
-  border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 8px;
   font-size: 11px;
   color: var(--muted);
+  background: var(--card);
   white-space: nowrap;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Status pills keep their text; long titles next to them wrap instead. */
-.bar .pill,
-.row > .pill {
   flex-shrink: 0;
 }
 
 .pill.on {
   color: var(--ok);
-  border-color: currentColor;
-}
-
-.pill.small {
-  font-size: 10px;
 }
 
 .card {
   background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
+  border-radius: 12px;
+  padding: 10px 12px;
   margin-bottom: 8px;
 }
 
-.eyebrow {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin-bottom: 6px;
+.card p {
+  margin: 4px 0 0;
 }
 
 .title {
@@ -129,6 +158,13 @@ button:disabled {
 
 .muted {
   color: var(--muted);
+}
+
+code {
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--field);
 }
 
 .mono {
@@ -144,8 +180,11 @@ button:disabled {
   margin: 8px 0;
 }
 
-.seek input {
+.seek input,
+.controls input {
   flex: 1;
+  min-width: 40px;
+  accent-color: var(--accent);
 }
 
 .controls {
@@ -154,52 +193,51 @@ button:disabled {
   gap: 6px;
 }
 
-.controls input {
-  flex: 1;
-  min-width: 40px;
+.icon,
+.ghost {
+  display: inline-grid;
+  place-items: center;
 }
 
 .icon {
-  border: 1px solid var(--border);
-  background: transparent;
+  border: 0;
+  background: var(--field);
   border-radius: 8px;
-  min-width: 34px;
+  min-width: 32px;
   height: 30px;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .icon.primary,
 .cast {
   background: var(--accent);
   color: var(--accent-text);
-  border-color: var(--accent);
 }
 
 .cast {
   width: 100%;
   margin-top: 8px;
-  height: 34px;
+  height: 36px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   font-weight: 600;
 }
 
 .candidate {
   display: grid;
   grid-template-columns: 16px 1fr;
-  gap: 2px 8px;
-  padding: 8px 4px;
-  border-top: 1px solid var(--border);
+  gap: 1px 8px;
+  padding: 8px 6px;
+  border-radius: 10px;
   cursor: pointer;
-}
-
-.candidate:first-child {
-  border-top: 0;
 }
 
 .candidate input {
   margin: 2px 0 0;
+  accent-color: var(--accent);
 }
 
 .candidate .name {
@@ -209,59 +247,93 @@ button:disabled {
   white-space: nowrap;
 }
 
-.candidate .meta,
-.candidate .notes {
+.candidate .sub,
+.candidate .note {
   grid-column: 2;
   font-size: 11px;
   color: var(--muted);
 }
 
-.candidate .notes {
-  margin: 2px 0 0;
-  padding-left: 14px;
+.candidate .sub.playing {
+  color: var(--ok);
+}
+
+.candidate .note {
+  color: var(--warn);
+}
+
+.candidate:hover,
+.candidate:focus-within {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.candidate.selected {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
 .tag {
   display: inline-block;
   border-radius: 4px;
-  padding: 0 5px;
-  margin-right: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
   font-size: 10px;
   font-weight: 600;
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: var(--field);
+  color: var(--muted);
 }
 
-.level-likely {
-  color: var(--ok);
-  border-color: currentColor;
+.tag.on-tv {
+  background: var(--accent);
+  color: var(--accent-text);
+  margin: 0 6px 0 0;
 }
 
 .level-possible {
   color: var(--warn);
-  border-color: currentColor;
 }
 
 .level-unlikely,
 .level-unsupported {
   color: var(--bad);
-  border-color: currentColor;
+}
+
+#others {
+  margin-top: 4px;
+}
+
+#others > summary {
+  cursor: pointer;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+#empty {
+  margin: 4px 2px;
+}
+
+.notice,
+.error {
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.notice {
+  background: var(--card);
+}
+
+.notice.warn {
+  color: var(--warn);
 }
 
 .error {
   background: var(--error-bg);
   color: var(--bad);
-  border: 1px solid currentColor;
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
 }
 
-.footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
+.error .advice {
+  margin-top: 4px;
+  color: var(--text);
 }
 
 .link {
@@ -271,135 +343,36 @@ button:disabled {
   color: var(--accent);
 }
 
-.notice {
-  border: 1px solid var(--border);
-  background: var(--card);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-}
-
-details.card > summary {
-  cursor: pointer;
-  list-style: none;
-}
-
-details.card > summary::-webkit-details-marker {
-  display: none;
-}
-
-.eyebrow.inline {
-  margin: 0;
-}
-
-.small {
-  font-size: 11px;
-}
-
 .field {
-  margin-top: 8px;
+  margin-top: 6px;
   justify-content: space-between;
 }
 
-select,
-#pair-code {
+.field:first-child {
+  margin-top: 0;
+}
+
+select {
   font: inherit;
   color: inherit;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--field);
+  border: 0;
+  border-radius: 8px;
   padding: 4px 6px;
+  max-width: 190px;
 }
 
-#pair-code {
-  flex: 1;
-  letter-spacing: 0.1em;
-}
-
-#companion-hint {
-  margin: 8px 0 6px;
-}
-
-.pills {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-}
-
-button.pill {
-  background: transparent;
-  cursor: pointer;
-}
-
-.pill.warn {
-  color: var(--warn);
-  border-color: currentColor;
-}
-
-.notice.warn {
-  color: var(--warn);
-  border-color: currentColor;
-}
-
-.hint {
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.candidate:hover,
-.candidate:focus-within {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-radius: 6px;
-}
-
-.candidate.selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-radius: 6px;
-}
-
-.candidate .where {
-  grid-column: 2;
-  font-size: 12px;
-}
-
-.where.playing {
-  color: var(--ok);
-}
-
-.tag.on-tv {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-text);
-}
-
-#others {
-  margin-top: 6px;
-}
-
-#others > summary {
-  cursor: pointer;
-  padding: 4px;
-}
-
-#pair-result.ok {
-  color: var(--ok);
-}
-
-#pair-result.bad {
-  color: var(--bad);
-}
-
-.candidate .hover-note {
-  grid-column: 2;
-  font-size: 11px;
-  color: var(--warn);
+#device {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .steps {
   display: grid;
   gap: 4px;
   font-size: 12px;
-  margin: 2px 0 8px;
+  margin-bottom: 8px;
 }
 
 .steps .ok {
@@ -416,14 +389,4 @@ button.pill {
 
 .actions {
   gap: 14px;
-}
-
-.advice {
-  margin-top: 4px;
-  color: var(--text);
-}
-
-.error .advice {
-  color: inherit;
-  opacity: 0.9;
 }

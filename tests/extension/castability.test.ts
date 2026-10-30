@@ -35,6 +35,17 @@ describe('assessCastability', () => {
     expect(result.notes.join(' ')).toMatch(/authentication required/);
   });
 
+  it('only warns about HEVC when no H.264 variant exists', () => {
+    expect(assessCastability(candidate({ codecs: ['hvc1.2.4.L153.B0', 'avc1.640028'] })).level).toBe('likely');
+    expect(assessCastability(candidate({ codecs: ['hvc1.2.4.L153.B0'] })).level).toBe('possible');
+  });
+
+  it('sends image-disguised segments through the relay', () => {
+    const hlsMedia = parseHls('#EXTM3U\n#EXT-X-MAP:URI="init.png"\n#EXTINF:4,\nseg-v0.png\n#EXT-X-ENDLIST\n', 'https://e.com/1080p/playlist.m3u8')!;
+    const result = assessCastability(candidate(), { reachable: true, status: 200, cors: '*', hlsMedia });
+    expect(result.companionHelps).toMatch(/disguised/);
+  });
+
   it('blocks DRM-protected HLS and DASH', () => {
     const hls = parseHls(HLS_FAIRPLAY, 'https://e.com/a.m3u8')!;
     expect(assessCastability(candidate(), { reachable: true, status: 200, cors: '*', hls, hlsMedia: hls }).blocker?.code).toBe('DRM');

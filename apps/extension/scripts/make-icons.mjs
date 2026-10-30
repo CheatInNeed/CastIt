@@ -1,6 +1,5 @@
 // Draws Castit's icon (a blue rounded square with a white screen and cast waves) and writes PNGs:
 //   apps/extension/icons/icon-{16,32,48,128}.png   (toolbar, extensions page, store)
-//   apps/controller/public/favicon.png             (controller page)
 // No image tools needed: shapes are rasterised with 4×4 supersampling and encoded with zlib.
 // Run: node apps/extension/scripts/make-icons.mjs
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -85,9 +84,7 @@ function png(size, rgba) {
 
 const root = new URL('../../../', import.meta.url);
 mkdirSync(new URL('apps/extension/icons/', root), { recursive: true });
-mkdirSync(new URL('apps/controller/public/', root), { recursive: true });
 for (const size of [16, 32, 48, 128]) {
   writeFileSync(new URL(`apps/extension/icons/icon-${size}.png`, root), png(size, render(size)));
 }
-writeFileSync(new URL('apps/controller/public/favicon.png', root), png(64, render(64)));
 console.log('icons written');

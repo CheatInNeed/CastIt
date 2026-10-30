@@ -64,7 +64,7 @@ export function routeStatus(target: SyncTarget, status: CastStatus): SyncRoute {
       update.wasPlaying = isPlayingPhase(status.phase);
       return { forward: toSyncState(status), update };
     default:
-      // loading / connecting / awaiting-device: nothing useful to mirror yet.
+      // loading / connecting: nothing useful to mirror yet.
       return { update };
   }
 }

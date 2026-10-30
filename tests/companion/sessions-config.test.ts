@@ -1,8 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { PairingStore, pickLanAddress } from '../../apps/companion/src/config.ts';
+import { pickLanAddress } from '../../apps/companion/src/config.ts';
 import { SessionStore } from '../../apps/companion/src/sessions.ts';
 
 describe('SessionStore', () => {
@@ -63,23 +60,5 @@ describe('pickLanAddress', () => {
       }),
     ).toBe('192.168.1.23');
     expect(pickLanAddress({ lo0: [iface('127.0.0.1', true)] })).toBeUndefined();
-  });
-});
-
-describe('PairingStore', () => {
-  it('persists only key hashes, with private file permissions', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'castit-'));
-    const store = new PairingStore(dir);
-    expect(store.paired).toBe(false);
-    store.add('super-secret-key', 'Chrome');
-    const raw = readFileSync(join(dir, 'companion.json'), 'utf8');
-    expect(raw).not.toContain('super-secret-key');
-    expect(statSync(join(dir, 'companion.json')).mode & 0o777).toBe(0o600);
-    const reloaded = new PairingStore(dir);
-    expect(reloaded.verify('super-secret-key')).toBe(true);
-    expect(reloaded.verify('wrong')).toBe(false);
-    reloaded.revokeAll();
-    expect(new PairingStore(dir).paired).toBe(false);
-    rmSync(dir, { recursive: true, force: true });
   });
 });

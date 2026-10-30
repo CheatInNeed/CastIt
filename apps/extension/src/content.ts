@@ -11,6 +11,7 @@ import type {
 } from '@castit/shared';
 import { describeVideo, findVideos, isReportable, markPlayed, pauseAll, videoKey } from './lib/detection.ts';
 import { clearHighlight, highlightVideo } from './lib/highlight.ts';
+import { closePanel, togglePanel } from './lib/panel.ts';
 import { SyncSession } from './lib/sync-session.ts';
 import { MAIN_EVENT, type MainWorldHint } from './main-world.ts';
 
@@ -210,6 +211,12 @@ function init(): void {
         sendResponse({ ok: true, videoKey: videoKey(video) } satisfies SyncStartResponse);
         break;
       }
+      case 'content/toggle-panel':
+        if (window === window.top) {
+          togglePanel(message.token);
+          sendResponse({ ok: true });
+        }
+        break;
       case 'content/sync-state':
         if (sync?.requestId === message.requestId) sync.receiverState(message.state);
         break;
@@ -243,6 +250,7 @@ function init(): void {
     sync?.stop('replaced', null, false);
     sync = null;
     clearHighlight();
+    closePanel();
   }
   document.addEventListener(RETIRE_EVENT, retire);
 

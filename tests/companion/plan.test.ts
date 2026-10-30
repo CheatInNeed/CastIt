@@ -8,6 +8,7 @@ import {
   subtitleArgs,
   summarizePlan,
   targetBitrate,
+  variantPlayable,
   videoEncodeArgs,
   virtualPlaylist,
 } from '../../apps/companion/src/plan.ts';
@@ -108,6 +109,17 @@ describe('planMedia', () => {
       encoder: 'h264_videotoolbox',
       subtitles: 1,
     });
+  });
+});
+
+describe('variantPlayable', () => {
+  it('judges HLS variants by codecs and resolution per receiver', () => {
+    const hevc4k = 'BANDWIDTH=1,RESOLUTION=3840x1604,CODECS="hvc1.2.4.L153.B0,mp4a.40.2"';
+    expect(variantPlayable('BANDWIDTH=1,RESOLUTION=1920x802,CODECS="avc1.640028,mp4a.40.2"', 'compat')).toBe(true);
+    expect(variantPlayable(hevc4k, 'compat')).toBe(false);
+    expect(variantPlayable(hevc4k, 'google-tv')).toBe(true);
+    expect(variantPlayable('BANDWIDTH=1,CODECS="avc1.640028,ec-3"', 'compat')).toBe(false);
+    expect(variantPlayable('BANDWIDTH=1', 'compat')).toBe(true);
   });
 });
 

@@ -9,28 +9,31 @@
   <body>
     <header class="bar">
       <div class="brand">Castit</div>
-      <div class="pills">
-        <span id="connection" class="pill" title="Chromecast / controller page">…</span>
-        <button id="companion-pill" class="pill" title="Local companion: click for details">Companion …</button>
+      <div class="row tight">
+        <select id="device" aria-label="TV" hidden></select>
+        <span id="device-status" class="pill" hidden></span>
+        <button id="settings-toggle" class="ghost" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></svg>
+        </button>
+        <button id="close" class="ghost" aria-label="Close" title="Close" hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
       </div>
     </header>
 
     <div id="stale" class="notice warn" role="alert" hidden>
-      Castit was rebuilt, but Chrome is still running the old version in the background.
-      <button id="reload-ext" class="link">Reload Castit</button>
+      Castit was updated. <button id="reload-ext" class="link">Reload</button>
     </div>
+
+    <section id="setup" class="card" hidden>
+      <div class="title">One-time setup</div>
+      <p class="muted">Run <code>npm run setup</code> in the Castit folder, then open Castit again.</p>
+    </section>
 
     <section id="now" class="card" hidden>
       <div class="row between">
-        <div class="eyebrow">Now casting<span id="now-device"></span></div>
-        <div id="now-phase" class="pill small"></div>
-      </div>
-      <div id="now-title" class="title"></div>
-      <div id="now-plan" class="muted small" hidden></div>
-      <div id="now-sync" class="muted small" hidden></div>
-      <div id="now-reconnect" class="notice warn small" hidden>
-        The controller tab is closed; the TV keeps playing.
-        <button id="reconnect" class="link small">Reconnect</button>
+        <div id="now-title" class="title"></div>
+        <span id="now-phase" class="pill"></span>
       </div>
       <div class="seek">
         <span id="now-time" class="mono">0:00</span>
@@ -38,24 +41,25 @@
         <span id="now-duration" class="mono">0:00</span>
       </div>
       <div class="controls">
-        <button id="btn-back" class="icon" title="Back 10 s" aria-label="Back 10 seconds">⟲10</button>
-        <button id="btn-play" class="icon primary" title="Play/pause" aria-label="Play or pause">▶</button>
-        <button id="btn-fwd" class="icon" title="Forward 30 s" aria-label="Forward 30 seconds">30⟳</button>
-        <button id="btn-mute" class="icon" title="Mute" aria-label="Mute">🔊</button>
+        <button id="btn-back" class="icon" title="Back 10 s" aria-label="Back 10 seconds">−10</button>
+        <button id="btn-play" class="icon primary" title="Play/pause" aria-label="Play or pause"></button>
+        <button id="btn-fwd" class="icon" title="Forward 30 s" aria-label="Forward 30 seconds">+30</button>
+        <button id="btn-mute" class="icon" title="Mute" aria-label="Mute"></button>
         <input id="now-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
-        <button id="btn-stop" class="icon" title="Stop casting" aria-label="Stop casting">■</button>
+        <button id="btn-stop" class="icon" title="Stop casting" aria-label="Stop casting">
+          <svg viewBox="0 0 24 24" width="12" height="12"><rect fill="currentColor" x="4" y="4" width="16" height="16" rx="3" /></svg>
+        </button>
       </div>
-      <label id="now-subs-row" class="row small field" hidden>
+      <label id="now-subs-row" class="row field" hidden>
         Subtitles
         <select id="now-subs"></select>
       </label>
     </section>
 
-    <section class="card">
-      <div class="eyebrow">Videos on this page <span class="hint">· hover a row to see it on the page</span></div>
+    <section id="list">
       <div id="candidates"></div>
       <details id="others" hidden>
-        <summary id="others-summary" class="small muted"></summary>
+        <summary id="others-summary" class="muted"></summary>
         <div id="others-list"></div>
       </details>
       <p id="empty" class="muted" hidden></p>
@@ -66,68 +70,44 @@
     <div id="error" class="error" role="alert" hidden></div>
 
     <section id="progress" class="card" hidden>
-      <div class="row between">
-        <div class="eyebrow">What Castit tried</div>
-        <span id="progress-state" class="pill small"></span>
-      </div>
       <div id="progress-list" class="steps"></div>
-      <div id="progress-advice" class="advice small" hidden></div>
       <div class="row actions">
-        <button id="stop-trying" class="link small" hidden>Stop trying</button>
-        <button id="copy-diag" class="link small">Copy diagnostics</button>
+        <button id="stop-trying" class="link" hidden>Stop trying</button>
+        <button id="copy-diag" class="link">Copy details</button>
       </div>
     </section>
 
-    <details id="companion" class="card">
-      <summary class="row between">
-        <span class="eyebrow inline">Local companion</span>
-        <span id="companion-state" class="pill small">…</span>
-      </summary>
-      <p id="companion-hint" class="muted small"></p>
-      <form id="pair-form" class="row" hidden>
-        <input id="pair-code" placeholder="123-456" inputmode="numeric" autocomplete="off" maxlength="7" aria-label="Pairing code" />
-        <button id="pair-btn" type="submit" class="icon primary">Pair</button>
-      </form>
-      <p id="pair-result" class="small" role="status" hidden></p>
-      <label class="row small field">
-        Casting method
+    <section id="settings" class="card" hidden>
+      <label class="row field">
+        Casting
         <select id="engine-mode">
-          <option value="auto">Automatic (direct, companion when needed)</option>
+          <option value="auto">Automatic</option>
           <option value="direct">Direct only</option>
-          <option value="companion">Always via companion</option>
-          <option value="transcode">Always convert (FFmpeg)</option>
+          <option value="companion">Always relay</option>
+          <option value="transcode">Always convert</option>
         </select>
       </label>
       <div id="transcode-settings" hidden>
-        <label class="row small field">
-          Your Chromecast
+        <label class="row field">
+          TV model
           <select id="tc-profile">
-            <option value="compat">Any Chromecast (safest)</option>
+            <option value="compat">Any Chromecast</option>
             <option value="ultra">Chromecast Ultra</option>
             <option value="google-tv">Chromecast with Google TV</option>
             <option value="gtv-streamer">Google TV Streamer</option>
           </select>
         </label>
-        <label class="row small field">
-          Conversion quality
+        <label class="row field">
+          Quality
           <select id="tc-quality">
-            <option value="auto">Auto (up to the TV's limit)</option>
+            <option value="auto">Auto</option>
             <option value="1080p">1080p</option>
-            <option value="720p">720p (less CPU, less Wi-Fi)</option>
+            <option value="720p">720p</option>
             <option value="480p">480p</option>
           </select>
         </label>
       </div>
-      <button id="companion-forget" class="link small" hidden>Forget pairing</button>
-    </details>
-
-    <footer class="footer">
-      <span>
-        <button id="open-controller" class="link">Open controller</button> ·
-        <button id="copy-diag-footer" class="link">Copy diagnostics</button>
-      </span>
-      <span class="muted">Never mirrors the tab.</span>
-    </footer>
+    </section>
 
     <script type="module" src="./popup.ts"></script>
   </body>

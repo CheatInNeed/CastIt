@@ -1,130 +1,91 @@
 # Castit
 
-Castit is a Chrome (Manifest V3) extension that casts the **actual media stream** of a web page (HLS, DASH, MP4, WebM) to a Chromecast or Google Cast device. It never mirrors, captures or records the tab.
+Castit is a Chrome (Manifest V3) extension that casts the **actual media stream** of a web page (HLS, DASH, MP4, WebM) to a Chromecast or Google Cast TV. It never mirrors, captures or records the tab.
 
-> **Version 1.0.** All eight phases are built. Castit detects the real stream on a page, including embedded cross-origin players, MediaSource players, shadow DOM, HLS/DASH, live streams and signed links. It casts that stream by the cheapest method that works: direct, through the optional local companion, or converted by FFmpeg. It checks the TV really plays, recovers by itself when it doesn't, and explains what it tried. While casting, the website's own player is the remote.
+> **Version 1.1.** Castit finds the real stream on a page, including embedded cross-origin players, MediaSource players, shadow DOM, live streams and signed links. It casts that stream the cheapest way that works: direct, relayed by your computer, or converted by FFmpeg. It checks the TV really plays, recovers by itself when it doesn't, and while casting the website's own player is the remote. There is no separate controller page: a small helper that Chrome starts by itself finds your TV and talks to it.
 
 ## Quick start
 
-1. **Build and load the extension.** Run `npm install`, then `npm run build`. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick `apps/extension/dist`.
-2. **Start the controller page** and leave it running: `npm run dev:controller`. For everyday use, publish it once (see [Production install](#production-install)) and skip this step.
-3. **Cast.** Play a video on any page, click the Castit icon (or press **Alt+Shift+C**) and click **Cast**. The first time, pick your Chromecast on the controller page.
-4. **Optional:** the local companion handles sites that block the Chromecast, and with FFmpeg it converts formats the TV can't play. Run `npm run companion` and pair it with the code it prints, under **Local companion** in the popup.
-5. **Control playback** from the page's own player, the popup, or **Alt+Shift+P**.
+1. **Set up once:**
 
-**Contents:** [How it works](#how-it-works) · [Install](#install-and-run-development) · [Production install](#production-install) · [Companion](#the-local-streaming-companion-optional) · [Page as remote](#the-websites-player-as-a-remote-control) · [Strategy](#how-castit-decides-automatic-strategy) · [Using it](#using-it) · [Tests](#manual-test-checklist) · [Compatibility](#compatibility) · [Limitations](#known-limitations)
+   ```bash
+   npm install
+   ```
+
+   ```bash
+   npm run setup
+   ```
+
+   This builds the extension and installs Castit's helper, which Chrome starts by itself when needed.
+2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick `apps/extension/dist`.
+3. **Cast.** Play a video, click the Castit icon (or press **Alt+Shift+C**) and click **Cast**. Castit finds your TV on the network; with several TVs, pick one in the panel's header.
+4. **Control playback** from the page's own player, the Castit panel, or **Alt+Shift+P**.
+
+Nothing has to keep running in a terminal. Run `npm run setup` again after pulling changes; `npm run uninstall-companion` removes the helper.
+
+**Contents:** [How it works](#how-it-works) · [Helper](#the-helper-companion) · [Page as remote](#the-websites-player-as-a-remote-control) · [Strategy](#how-castit-decides-automatic-strategy) · [Using it](#using-it) · [Tests](#manual-test-checklist) · [Compatibility](#compatibility) · [Limitations](#known-limitations)
 
 ## How it works
 
 ```
- web page ──(webRequest + content script)──► extension background ──(port)──► controller page ──(Cast SDK)──► Chromecast
-                                                   ▲      │                                                       │
-                                     popup ────────┘      │ (optional, localhost API)              Direct: fetches the stream itself
-                                                          ▼                                        Companion: fetches via your computer
-                                                 local companion (Node) ◄──────── LAN media URL ─────────────────┘
-                                                          │
-                                                          └── fetches the real stream bytes upstream (never screen capture)
+ web page ──(webRequest + content script)──► extension background ──(native messaging)──► helper (Node) ──(Cast protocol)──► TV
+                                                   ▲                                         │   ▲                            │
+                              Castit panel ────────┘                                         │   └── LAN media URL ───────────┤ relayed / converted
+                                                                                             │                                │
+                                                                                             └── fetches the real stream ◄────┘ direct: TV fetches it itself
 ```
 
 | Part | Path | Role |
 |---|---|---|
-| Extension | `apps/extension` | Detects media, ranks candidates, checks castability, popup UI and remote controls |
-| Controller | `apps/controller` | Small web page that hosts the Google Cast Web Sender SDK and talks to the Chromecast |
-| Companion | `apps/companion` | Optional Node.js relay: streams media bytes from the source to the Chromecast over your LAN |
-| Shared | `packages/shared` | Types, the message protocol and the companion API contract |
-| Tests | `tests/` | Vitest unit tests, DOM tests (happy-dom), mock-media-server integration tests, companion end-to-end tests, and a manual test page |
+| Extension | `apps/extension` | Detects media, ranks candidates, checks castability, the Castit panel and remote controls |
+| Helper (companion) | `apps/companion` | Finds TVs (mDNS), casts to them over the Cast protocol, relays and converts streams the TV can't fetch or play itself |
+| Shared | `packages/shared` | Types and the message protocols |
+| Tests | `tests/` | Vitest unit tests, DOM tests (happy-dom), a fake Cast TV, companion end-to-end tests, and a manual test page |
 
-### Why a separate controller page?
+### Why a helper instead of the Cast SDK?
 
-MV3 forbids remotely hosted code in extensions, and the Cast Web Sender SDK can only be loaded from `gstatic.com`. So the SDK runs in an ordinary web page (`http://localhost:5173` during development, any static HTTPS host in production). That page connects to the extension with `chrome.runtime.connect(extensionId)`, which Chrome allows only for origins listed in the extension's `externally_connectable`. The extension also checks the sender origin and a random pairing token that it passes in the URL fragment when it opens the controller.
+Chrome extensions may not run code downloaded from the internet, and Google's Cast sender library only exists as a script on Google's servers. Earlier versions therefore ran it in a separate web page. Castit now speaks the Cast protocol itself from a small Node.js helper. Chrome starts it through **native messaging** when the extension connects, and stops it when it's idle; only the Castit extension is allowed to start it. That removes the controller page, the device-picker click and the pairing code.
 
-Chrome only opens its Cast device picker in response to a click on the page that requested it. The first cast in a browser session therefore takes **two clicks**: **Cast** in the popup, then **Choose Cast device** on the controller page. After that, while the session lasts, casting from the popup loads the new stream straight away.
+### Why a panel over the page?
+
+Chrome's toolbar popup is an opaque native window. Castit instead shows its panel inside the page (its own page in an iframe, isolated in a closed shadow root), so it can have rounded corners and blur what is behind it. On pages extensions can't touch (`chrome://` pages, the Web Store) it falls back to the normal popup. A per-open secret in the panel's address keeps websites from embedding it themselves.
 
 ## Requirements
 
-- Google Chrome 116 or later (desktop)
-- Node.js 22.18 or later (tested with Node 25) and npm. The companion runs its TypeScript directly with Node's built-in type stripping.
-- Optional, for converting formats: [FFmpeg](https://ffmpeg.org) with `ffprobe`, on your `PATH` (macOS: `brew install ffmpeg`). Tested with FFmpeg 9.0. Without it the companion still relays streams.
-- A Chromecast / Google Cast device on the same network, for real casting
+- Google Chrome 116 or later (desktop), on macOS or Linux (Windows: the helper's installer isn't written yet)
+- Node.js 22.18 or later (tested with Node 25) and npm
+- Optional, for converting formats: [FFmpeg](https://ffmpeg.org) with `ffprobe` (macOS: `brew install ffmpeg`). Without it, Castit still casts and relays.
+- A Chromecast or Google Cast TV on the same network
 
-## Install and run (development)
-
-```bash
-npm install
-```
-
-```bash
-npm run build
-```
-
-Then:
-
-1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and select `apps/extension/dist`.
-2. Start the controller page and leave it running:
-
-   ```bash
-   npm run dev:controller
-   ```
-
-3. Optional: serve the manual test page on http://localhost:5174 (it binds to `127.0.0.1` so the page can embed itself cross-origin from `http://127.0.0.1:5174`):
-
-   ```bash
-   npm run dev:testpage
-   ```
-
-To rebuild the extension on every change, run `npm run dev:extension` and click the reload icon on `chrome://extensions` after each rebuild.
-
-## Production install
-
-For everyday use, the controller page should live on a permanent HTTPS address instead of your laptop's dev server.
-
-1. **Publish the controller** to GitHub Pages. Push the repository to GitHub, then set **Settings → Pages → Source: GitHub Actions**. The included workflow (`.github/workflows/controller-pages.yml`) builds and publishes `apps/controller` on every push that touches it. Any other static HTTPS host works too: upload `apps/controller/dist`, whose asset paths are relative, so a sub-path is fine.
-2. **Build the extension for that address.** The address is baked into the manifest, because `externally_connectable` must list it:
-
-   ```bash
-   npm run package -- --controller https://<you>.github.io/<repo>/
-   ```
-
-   This builds both apps and writes `release/castit-extension-<version>.zip`. It refuses plain-HTTP addresses other than localhost.
-3. **Load it** with **Load unpacked** on `apps/extension/dist` (or unzip the release file somewhere permanent and load that). The Chrome Web Store dashboard accepts the zip as-is.
-
-The extension only accepts the controller from that exact origin, and only with the per-browser-session token it hands out when it opens the controller. On `github.io` your other Pages sites share the origin, which is why the token is required.
-
-### Scripts
+## Development
 
 | Command | What it does |
 |---|---|
+| `npm run setup` | Builds everything and installs the helper for Chrome (and Chromium, Brave, Edge when present) |
+| `npm run uninstall-companion` | Removes the helper again |
+| `npm run build` | Builds the extension (`apps/extension/dist`) and the helper bundle (`apps/companion/dist`) |
 | `npm test` | Runs the unit and integration tests (Vitest) |
 | `npm run typecheck` | Type-checks all packages |
-| `npm run build` | Builds the extension (`apps/extension/dist`) and the controller (`apps/controller/dist`) |
-| `npm run dev:controller` | Starts the controller on http://localhost:5173 |
-| `npm run dev:extension` | Rebuilds the extension on every change |
+| `npm run dev:extension` | Rebuilds the extension on every change (reload it on `chrome://extensions`) |
 | `npm run dev:testpage` | Serves `tests/manual` on http://localhost:5174 |
 | `npm run compat` | Shows what Castit would list and choose on each recorded real site |
 | `npm run compat:site` | Starts the local movy-like test site (aggregator → embedded player → protected video server) |
-| `npm run companion` | Starts the local streaming companion (add `-- --pair` to pair another browser, `-- --help` for options, `-- --ffmpeg <path>` for a custom FFmpeg) |
-| `npm run package -- --controller <https url>` | Production build of both apps plus `release/castit-extension-<version>.zip` |
-| `npm run icons` | Regenerates the icons (`apps/extension/icons`, controller favicon) |
+| `npm run icons` | Regenerates the icons |
 
-## The local streaming companion (optional)
+The extension's manifest carries a fixed public `key`, so its ID (`eflnlfagpgmlccfedomaaofcdlaehikl`) is the same on every computer; the helper only accepts that ID. The helper logs to `~/.castit/companion.log`.
 
-Direct Casting hands the Chromecast the stream URL. That fails when the Chromecast isn't allowed to fetch the stream itself. The two most common reasons:
+## The helper (companion)
 
-- The stream host sends no CORS headers, which the Chromecast's HLS/DASH player requires.
-- The stream host checks the `Referer`/`Origin` of the embedding player (hotlink protection).
+The helper does three jobs:
 
-The companion is a small Node.js server on your computer. The Chromecast fetches the media from it, and it fetches the real stream bytes upstream with the right `Referer`/`Origin`, adding CORS headers on the way. Media is relayed, not recorded or captured: nothing is written to disk, and nothing is decoded or re-encoded.
+1. **Finds TVs.** It asks the network for Cast devices (mDNS, `_googlecast._tcp`), the way Chrome does. Speakers and speaker groups are left out.
+2. **Casts.** It talks to the TV over the Cast protocol (TLS on port 8009): starts Google's Default Media Receiver, loads the stream, follows playback and sends remote commands. When the helper restarts mid-cast it re-attaches, but only if the TV still plays that exact stream.
+3. **Relays and converts.** Direct casting hands the TV the stream URL. That fails when the TV isn't allowed to fetch the stream itself: the stream host sends no CORS headers, or it checks the `Referer`/`Origin` of the embedding player (hotlink protection). The helper then fetches the real stream bytes upstream with the right `Referer`/`Origin` and serves them to the TV over your LAN. With FFmpeg, it also converts what the TV can't decode.
 
-```bash
-npm run companion
-```
+**Casting method** (Castit panel → settings):
 
-It prints a pairing code. Open the Castit popup, expand **Local companion**, enter the code and click **Pair**. Pairing is remembered on both sides, so later runs need no code.
-
-**Casting method** (in the same section):
-
-- **Automatic** (default): Direct, but uses the companion straight away when Castit already knows it's needed (no CORS, or HTTP 401/403 without the page's Referer). If a direct cast fails on the receiver (load failed, segment failure, or no playback within 30 s), Castit retries once through the companion. The popup then says "Retrying through the local companion…".
-- **Direct only** / **Always via companion**: force one engine.
+- **Automatic** (default): direct, but relays straight away when Castit already knows it's needed (no CORS, or HTTP 401/403 without the page's Referer). If a direct cast fails on the TV (load failed, segment failure, or no playback within 30 s), Castit retries through the relay.
+- **Direct only** / **Always relay** / **Always convert**: force one method.
 
 ### How it works
 
@@ -138,8 +99,7 @@ It prints a pairing code. Open the Castit popup, expand **Local companion**, ent
 
 | Concern | What the companion does |
 |---|---|
-| Who can control it | The control API listens on `127.0.0.1:47800` only. It requires an API key obtained by pairing: a 6-digit code shown in the terminal, valid for 10 minutes and 5 attempts. Keys are stored only as SHA-256 hashes in `~/.castit/companion.json` (mode 0600). |
-| Web pages attacking localhost | Requests carrying a web-page `Origin`, or a `Host` other than the loopback address (DNS rebinding), are refused. No CORS is offered on the control API. |
+| Who can control it | Nothing listens for commands on the network. Chrome starts the helper and talks to it over stdin/stdout (native messaging), and its manifest lists only Castit's extension ID. |
 | Who can fetch media | Each cast gets a random 192-bit session id in its URLs. The session is bound to the first device that uses it (the Chromecast); other devices on the LAN get 403. Requests from this computer never claim the binding. |
 | SSRF / open proxy | Upstreams must be http(s) with no embedded credentials. Private, loopback, link-local, CGNAT, multicast and reserved addresses are blocked, both as IP literals and *after DNS resolution*: the checked address is the one connected to, which defeats DNS rebinding. A session can only fetch from hosts its own manifests or redirects referred to. `--allow-private` lifts the address check for LAN media servers and is off by default. |
 | Credentials | The only upstream context accepted is `Referer`, `Origin` and `User-Agent`. Cookies, `Authorization` and other headers are never forwarded, whether they come from the receiver or the extension. Upstream `Set-Cookie` is never passed on. |
@@ -167,19 +127,19 @@ Transcoded video is cut into fixed 4-second HLS segments with a keyframe forced 
 
 Remuxed and live streams use FFmpeg's own growing playlist instead. Seeking ahead works as far as has been produced, which is usually all of it within seconds for a remux.
 
-Text subtitles (SRT, ASS, WebVTT, MP4 text) are converted to WebVTT and offered to the TV. Pick them in the popup or on the controller page. Image subtitles (PGS, DVD) can't be converted to text and are skipped.
+Text subtitles (SRT, ASS, WebVTT, MP4 text) are converted to WebVTT and offered to the TV. Pick them in the Castit panel. Image subtitles (PGS, DVD) can't be converted to text and are skipped.
 
-**Popup settings** (under *Local companion*, when FFmpeg is available):
+**Settings** (in the Castit panel, when FFmpeg is available):
 
-- **Your Chromecast** decides what counts as playable:
+- **TV model** decides what counts as playable:
   - *Any Chromecast (safest)*: H.264 ≤ 1080p, AAC/MP3/Opus/Vorbis/FLAC.
   - *Chromecast Ultra*: adds HEVC, VP9, 4K.
   - *Chromecast with Google TV*: adds Dolby Digital.
   - *Google TV Streamer*: adds AV1.
-- **Conversion quality** caps the output resolution (Auto, 1080p, 720p, 480p). Lower is less CPU and less Wi-Fi.
-- **Casting method → Always convert (FFmpeg)** forces conversion, which is useful for testing.
+- **Quality** caps the output resolution (Auto, 1080p, 720p, 480p). Lower is less CPU and less Wi-Fi.
+- **Casting → Always convert** forces conversion, which is useful for testing.
 
-In *Automatic* mode, Castit converts up front when it already knows it must: an FLV/AVI file, an MKV, or HEVC/AV1 codecs seen in the manifest or the page's player. Otherwise, after a direct cast fails on the TV, the companion analyses the stream and converts only if that's the problem. If a plain relay also fails, it forces a conversion as a last resort.
+In *Automatic* mode, Castit converts up front when it already knows it must: an FLV/AVI file, an MKV, or HEVC/AV1 codecs seen in the manifest or the page's player. Otherwise, after a direct cast fails on the TV, the helper analyses the stream and converts only if that's the problem. If a plain relay also fails, it forces a conversion as a last resort.
 
 ## The website's player as a remote control
 
@@ -197,10 +157,10 @@ Once the TV is actually playing, the page's own video player becomes the remote.
 
 - **Ignoring its own changes.** Every change Castit makes to the page's video (pause, jump) is recorded as *expected*, and the events it causes are ignored.
 - **Requiring a real gesture.** Only actions with a real user gesture (`navigator.userActivation`) are sent to the TV. A page script calling `play()` by itself never controls the TV; it is simply paused again.
-- **Not fighting.** If a page keeps restarting its player by itself (more than 6 times in 5 s), Castit stops fighting, mutes it instead, and says so in the popup.
+- **Not fighting.** If a page keeps restarting its player by itself (more than 6 times in 5 s), Castit stops fighting and mutes it instead.
 - **Only the right frame.** The background accepts remote commands only from the exact tab and frame that was synced, for the current cast.
 
-When no controllable player is found (e.g. the page navigated away), the popup says so. Castit's own controls (popup, controller page, `Alt+Shift+P`) always work.
+When no controllable player is found (e.g. the page navigated away), the page is just paused. Castit's own controls (the panel, `Alt+Shift+P`) always work.
 
 ## How Castit decides (automatic strategy)
 
@@ -224,14 +184,14 @@ Every cast is a short series of *attempts*. Each attempt pairs one stream with o
 5. **Try the same video another way.** When every method failed for one stream, Castit tries other streams of the *same page player* (sites often offer both HLS and DASH). It never switches to a different video or an advert.
 6. **Give up with a reason.** If nothing plays, the message names the most specific cause found across all attempts, e.g. "Castit tried 3 ways; none played. Most likely cause: …".
 
-**In the popup**, a *What Castit tried* card appears whenever a cast failed or needed more than one attempt, for example:
+**In the panel**, the list of attempts appears whenever a cast failed or needed more than one attempt, for example:
 
 ```
 1. Direct to the Chromecast: The Chromecast could not download or read the stream's playlist (often blocked by the server: CORS or Referer checks).
 2. Repackaged by FFmpeg (no re-encoding): playing ✓
 ```
 
-**Stop trying** cancels a running series of attempts. **Copy diagnostics** (also in the footer) copies a plain-text report for bug reports. It contains the page and stream addresses *without* their query strings (which often hold signatures), what was detected, every attempt with the TV's error codes, and the companion and FFmpeg status.
+**Stop trying** cancels a running series of attempts. After a failure, **Copy details** copies a plain-text report for bug reports. It contains the page and stream addresses *without* their query strings (which often hold signatures), what was detected, every attempt with the TV's error codes, and the companion and FFmpeg status.
 
 The strategy is a pure, unit-tested module (`apps/extension/src/lib/strategy.ts`). The background worker only executes its steps.
 
@@ -239,45 +199,43 @@ The strategy is a pure, unit-tested module (`apps/extension/src/lib/strategy.ts`
 
 The toolbar badge shows how many videos Castit found on the page (blue). On the tab that is casting it shows a green ▶, and hovering the icon names the TV.
 
-If you close the controller tab while casting, the TV keeps playing. The popup then shows **Reconnect**, and pressing any control does the same: the controller reopens, rejoins the running cast (only once it has confirmed the TV still plays that stream) and keeps the page's player in sync. When something fails, the popup says what went wrong and **what you can do**, for example pair the companion, install FFmpeg, reload the page, or check the Wi-Fi. The advice depends on what you already have set up.
+1. Open a page with a video and start playing it.
+2. Click the Castit icon (or press **Alt+Shift+C**). The best candidate is pre-selected; hovering a row outlines its video on the page.
+3. Click **Cast**. Castit checks the stream once without cookies (expired URL? DRM? CORS? live or VOD?), then sends it to the TV shown in the header.
+4. When the TV is actually playing, Castit pauses the video on the page. If you were part-way through a VOD video, the TV starts from the same position.
+5. Control playback from the page's player or the panel (play/pause, −10/+30 s, seek, volume, mute, stop). **Alt+Shift+P** toggles play/pause. Click outside the panel or press Esc to close it.
 
-1. Open a page with a video and start playing it. The toolbar badge shows how many castable streams Castit found.
-2. Click the Castit icon (or press **Alt+Shift+C**). The best candidate is pre-selected. Each candidate shows its format, quality, host and a castability rating.
-3. Click **Cast**. Castit fetches the stream once without cookies to check it (expired URL? DRM? CORS? live or VOD? TS or fMP4 segments?), then hands it to the controller.
-4. On the controller tab, click **Choose Cast device** and pick your Chromecast.
-5. When the TV is actually playing, Castit pauses the video on the page. If you were part-way through a VOD video, the TV starts from the same position.
-6. Control playback from the popup (play/pause, ±10/30 s, seek, volume, mute, stop) or from the controller page. **Alt+Shift+P** toggles play/pause.
+When something fails, the panel says what went wrong and what you can do (reload the page, install FFmpeg, check the Wi-Fi…).
 
 ## Manual test checklist
 
-With `npm run dev:controller` and `npm run dev:testpage` running and the extension loaded (reload it on `chrome://extensions` after each build). Open http://localhost:5174, and reload the page between scenarios for a clean list. Each section of the page also states what to expect.
+With `npm run dev:testpage` running and the extension loaded (reload it on `chrome://extensions` after each build). Open http://localhost:5174, and reload the page between scenarios for a clean list. Each section of the page also states what to expect.
 
-1. **Progressive MP4 (redirected):** play video 1 and open the popup. Expect one `big_buck_bunny_720p_surround.mp4` candidate (FILE · MP4 · 360p · PLAYING · Castable). It is the archive.org URL, not its `dn….archive.org` redirect target. Cast it. Expect the TV to start from about the same position and the page's video to pause.
-2. **HLS through MediaSource:** play video 2 and open the popup. The first time, several `.m3u8` entries may appear; within a second the popup inspects the master and leaves one: HLS · N qualities · 1080p · H.264 · Castable.
+1. **Progressive MP4 (redirected):** play video 1 and open Castit. Expect one `big_buck_bunny_720p_surround.mp4` candidate (FILE · MP4 · 360p · PLAYING · Castable). It is the archive.org URL, not its `dn….archive.org` redirect target. Cast it. Expect the TV to start from about the same position and the page's video to pause.
+2. **HLS through MediaSource:** play video 2 and open Castit. The first time, several `.m3u8` entries may appear; within a second Castit inspects the master and leaves one: HLS · N qualities · 1080p · H.264 · Castable.
 3. **DASH through MediaSource:** play video 3. Expect one DASH candidate linked to the playing player.
 4. **Cross-origin embedded player:** press ▶ inside the iframe (scenario 4). Expect the HLS candidate to read "… · in player 127.0.0.1".
-5. **Dynamic player:** click "Insert player in 1.5 s" with the popup open. The Sintel MP4 should appear without reopening the popup.
+5. **Dynamic player:** click "Insert player in 1.5 s" with Castit open. The Sintel MP4 should appear without reopening it.
 6. **Closed shadow root:** play scenario 6. The Sintel trailer must be detected, even though the page's own scripts cannot see that video.
 7. **Ad-like clip and broken source:** scenario 7 ranks low (short clip, small player, tiny file). Scenario 8 is listed as "Unlikely" with "The page's own player could not load this URL…", and is never pre-selected.
-8. **Page player as remote:** cast scenario 2 (HLS) and wait for the TV to play. The page's player should pause and show the "Casting to …" badge, and the popup should say "The page’s own player is your remote". Press the player's ▶: the TV should pause; press again: it plays. Click the page's timeline: the TV seeks there. Pause from the popup: the page's timeline jumps to the TV's position. Click **Disconnect** in the controller while the TV plays: the page continues from where the TV was.
-9. **Embedded player as remote:** do the same with scenario 4 (cross-origin iframe). The popup should mention "player on 127.0.0.1".
-10. **Companion pairing:** run `npm run companion`. Expand **Local companion** in the popup; it should say "Not paired". Enter the code; it should switch to "Ready".
-11. **Forced relay:** set the casting method to **Always via companion** and cast scenario 1 or 2. The popup's "Now casting" line should say "via companion", and the companion terminal should log a session. Seek around: the receiver's range requests show up as playback continuing without a full download.
-12. **Automatic fallback:** with **Automatic** selected, cast a stream whose host lacks CORS (try a real site). Castit either picks the companion straight away, with the reason in the candidate's notes, or retries through it after the direct load fails.
-13. **Remote control:** while casting, try play/pause, seek, volume, mute and stop from the popup and from the controller page. Each should act on the TV.
-14. **Service worker restart:** on `chrome://extensions`, open Castit's service worker DevTools and use **Stop**, then open the popup again. The candidates (kept in `storage.session`) and the controls should still work, because the controller reconnects on its own.
-15. **Errors:** close the controller tab and press play/pause in the popup. Expect "The Castit controller page is not open…". Cast with no Chromecast on the network. Expect "No Cast devices found" or a "No compatible Cast device…" message, not a generic failure.
-16. **No video:** open a page with no video. Expect "No video detected yet…".
-17. **Automatic recovery:** with **Automatic** selected and the companion paired, cast a stream that fails directly (a real site without CORS is ideal). The popup's *What Castit tried* card should show the failed direct attempt with a specific reason, then the working method. Click **Copy diagnostics** and paste it somewhere: it should list both attempts and contain no `?…=` query strings.
-18. **Conversion (needs FFmpeg):** with the companion running, check that the popup says "Converting with FFmpeg (hardware: videotoolbox)" or similar. Open a page with an MKV, or set **Always convert** and cast scenario 1. The popup's "Now casting" line should say "· converted" and list what is converted. Seek far ahead: playback should resume within a couple of seconds. If the file has subtitles, choose them in the Subtitles menu.
-19. **Companion stopped:** stop the companion and set **Always via companion**. Casting should fail with "The local companion is not running or not paired…".
-20. **Real sites:** try a few sites that embed third-party players. Note what the popup lists and whether casting works. These reports drive Phase 7.
+8. **Page player as remote:** cast scenario 2 (HLS) and wait for the TV to play. The page's player should pause and show the "Casting to …" badge, and the panel should show it ON TV. Press the player's ▶: the TV should pause; press again: it plays. Click the page's timeline: the TV seeks there. Pause from the panel: the page's timeline jumps to the TV's position. Click ■ in the panel while the TV plays: the page stays paused at the TV's position.
+9. **Embedded player as remote:** do the same with scenario 4 (cross-origin iframe).
+10. **Helper not installed:** run `npm run uninstall-companion`, reload the extension and open the panel. It should show *One-time setup* and disable **Cast**. Run `npm run setup` again.
+11. **Forced relay:** set **Casting → Always relay** and cast scenario 1 or 2. `~/.castit/companion.log` should log a session. Seek around: the TV's range requests keep playback going without a full download.
+12. **Automatic fallback:** with **Automatic** selected, cast a stream whose host lacks CORS (try a real site). Castit either relays straight away or retries through the relay after the direct load fails.
+13. **Remote control:** while casting, try play/pause, seek, volume, mute and stop from the panel. Each should act on the TV.
+14. **Service worker restart:** on `chrome://extensions`, open Castit's service worker DevTools and use **Stop** while the TV plays, then open the panel again. The helper restarts, re-attaches to the running cast, and the controls work.
+15. **Errors:** turn the TV off (or disconnect from its Wi-Fi) and open the panel: the header should say *No TV found*, and casting should explain the TV can't be reached.
+16. **No video:** open a page with no video. Expect "No video found…".
+17. **Automatic recovery:** with **Automatic** selected, cast a stream that fails directly (a real site without CORS is ideal). The attempts list should show the failed direct attempt with a specific reason, then the working method. Click **Copy details** and paste it somewhere: it should list both attempts and contain no `?…=` query strings.
+18. **Conversion (needs FFmpeg):** open a page with an MKV, or set **Always convert** and cast scenario 1. Seek far ahead: playback should resume within a couple of seconds. If the file has subtitles, choose them in the Subtitles menu.
+19. **Real sites:** try a few sites that embed third-party players. Note what Castit lists and whether casting works. These reports drive Phase 7.
 
 ## Compatibility
 
 ### How sites are tested
 
-- **Recorded real sites (regression tests).** A snippet (`tests/compat/tools/capture-snippet.js`) is run on a real site while it plays. It records what Castit's network observer and page script would see: the stream requests (long runs of segments trimmed) and the `<video>` elements. Manifests are then inspected exactly as the popup does (`tests/compat/tools/inspect-manifests.ts`). Each recording lives in `tests/fixtures/compat/` and is replayed through Castit's real detection, ranking and castability code on every `npm test`. `npm run compat` prints the outcome per site.
+- **Recorded real sites (regression tests).** A snippet (`tests/compat/tools/capture-snippet.js`) is run on a real site while it plays. It records what Castit's network observer and page script would see: the stream requests (long runs of segments trimmed) and the `<video>` elements. Manifests are then inspected exactly as the panel does (`tests/compat/tools/inspect-manifests.ts`). Each recording lives in `tests/fixtures/compat/` and is replayed through Castit's real detection, ranking and castability code on every `npm test`. `npm run compat` prints the outcome per site.
 - **A local movy-like site (`npm run compat:site`).** It copies the architecture of aggregator streaming sites without visiting any:
   - an aggregator page with a pop-up ad and an ad iframe;
   - a player embedded from *another* origin, with click-to-play, a skippable pre-roll ad, and a stream address fetched from an API (obfuscated);
@@ -308,16 +266,16 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 
 ### Your TV checklist for Phase 7
 
-Keep **Automatic** selected and the companion paired. On each site: play the video, open Castit, and check that the pre-selected entry is the video you were watching. Then cast. If anything is off, click **Copy diagnostics** and send me the text.
+Keep **Automatic** selected. On each site: play the video, open Castit, and check that the pre-selected entry is the video you were watching. Then cast. If anything is off, click **Copy details** and send me the text.
 
 1. **Live stream:** open the live channel above (`https://hlsjs.video-dev.org/demo/?src=https%3A%2F%2Fdemo.unified-streaming.com%2Fk8s%2Flive%2Fscte35.isml%2F.m3u8`) and cast. The TV should play it live, with no seek bar.
 2. **VP9 file:** cast the Wikimedia video. If your Chromecast predates the Ultra, the attempts card should show a conversion (needs FFmpeg) or explain the codec.
 3. **Movy-like site:**
-   1. Run `npm run compat:site` and restart the companion with `npm run companion -- --allow-private`.
+   1. Run `npm run compat:site`. The site runs on your own computer, which the helper refuses to relay from by default: add `--allow-private` to the last line of `~/.castit/host/castit-companion`, then reload the extension (the helper restarts with it). Run `npm run setup` afterwards to undo it.
    2. Open the printed `…/watch/1` address in Chrome, press ▶ in the player and skip the ad.
    3. Cast.
 
-   Expected: the site's terminal logs a `403 hotlink protection` for the Chromecast, then `200 … (referer ok)` once Castit relays. The popup's *What Castit tried* card shows that path.
+   Expected: the site's terminal logs a `403 hotlink protection` for the Chromecast, then `200 … (referer ok)` once Castit relays. The panel's attempts list shows that path.
 4. **Expired link:** on the movy-like site, wait 10+ minutes after pressing ▶, then cast. You should get a clear "expired, reload the page" message.
 5. **Your own sites:** two or three sites you actually use, including one where you're logged in.
 6. **DRM check:** a Vimeo video should be listed as *Not castable: DRM-protected*. That's expected.
@@ -326,7 +284,7 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 
 - **No tab capture anywhere.** The manifest has no `tabCapture` or `desktopCapture`. The Chromecast fetches and decodes the stream itself.
 - **Detection runs on two paths.** `chrome.webRequest.onResponseStarted` (observe-only, non-blocking) sees every media response from any frame, including cross-origin player iframes, with its tab and frame ID. The content script runs in all frames and reports `<video>` elements: source, playing state, size, poster and duration. A `blob:` source is treated as a sign of MediaSource playback, never as a castable URL. The manifest that feeds it is then found among the network candidates of the same frame.
-- **Service-worker safe.** All state is in `chrome.storage.session`, and each tab's read-modify-write is serialised so concurrent events can't overwrite each other. A page navigation clears the tab, and a sub-frame navigation clears that frame. Only the controller port lives in memory, and the controller reconnects with backoff whenever the worker restarts.
+- **Service-worker safe.** All state is in `chrome.storage.session`, and each tab's read-modify-write is serialised so concurrent events can't overwrite each other. A page navigation clears the tab, and a sub-frame navigation clears that frame. Only the helper's native messaging port lives in memory; when the worker restarts, the helper restarts too and re-attaches to the running cast.
 - **Ranking is pure and deterministic** (`lib/rank.ts`). Points go to: the playing video, HLS/DASH manifests over single files, the first playlist requested (usually the master), large players, and higher resolution. Points come off for ads, short clips, tiny files and audio-only streams. Segments are excluded. Duplicate URLs are compared with signing and cache-buster parameters removed, but the original URL is always the one that gets cast.
 - **The probe never sends cookies** (`credentials: 'omit'`). That keeps your credentials private, and it approximates what the Chromecast will see, since it has no cookies either.
 - **Detection doesn't prove casting works.** A cast counts as successful only once the receiver reports `PLAYING`. If the stream fails to load, errors out, or doesn't start within 30 seconds, the error says which.
@@ -341,24 +299,22 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 
   Hints reach the content script as JSON `CustomEvent`s. A page could forge them, which would only change how Castit describes that page's own media.
 - **Shadow DOM.** Shadow roots, open and closed, are searched with `chrome.dom.openOrClosedShadowRoot`, and each one gets its own media-event listeners and MutationObserver. Pages without shadow DOM stay on the cheap shallow scan.
-- **Manifest inspection.** When the popup opens, the worker fetches the tab's not-yet-inspected HLS/DASH manifests, oldest first and without cookies. That gives master or media role, number of qualities, top resolution, codecs, live or VOD, audio and subtitle tracks, DRM and CORS. Variant and rendition playlists of a known master are then hidden. This happens only on demand, never just because a page loaded.
+- **Manifest inspection.** When the panel opens, the worker fetches the tab's not-yet-inspected HLS/DASH manifests, oldest first and without cookies. That gives master or media role, number of qualities, top resolution, codecs, live or VOD, audio and subtitle tracks, DRM and CORS. Variant and rendition playlists of a known master are then hidden. This happens only on demand, never just because a page loaded.
 - **Redirects.** The URL the page asked for is kept and cast (the Chromecast follows redirects). The final URL is used to match it with the `<video>` element.
 - **Failures count as evidence.** Media responses with HTTP ≥ 400 and `<video>` load errors (`MediaError`) are recorded. Streams that only failed are dropped. A player whose own source failed is shown as "Unlikely" with the reason.
 - **SPA navigation.** A history-API URL change marks older, non-playing streams as "from before the page navigated" and ranks them lower.
-- **Popup** shows quality, number of qualities, LIVE, codec (H.264/HEVC/AV1/VP9), AD, the embedding player's host, and DRM/CORS notes before you click Cast.
+- **The panel** shows quality, LIVE, AD and castability, and for the selected stream why it may not work, before you click Cast.
 
 ## Known limitations
 
-- **What has not been tested for Phase 8:**
-  - **Reconnect after closing the controller tab:** unit-tested logic, not yet tried on your Chromecast.
-  - **Production build on GitHub Pages:** the packaging was checked locally, but the Pages workflow hasn't run because the repository has no GitHub remote yet.
-  - **Popup states** (reconnect, advice, casting badge text) were checked visually with sample data.
+- **What has been tested for 1.1 (no controller page):** TV discovery found the real TV on this network, and the helper connected to it over the Cast protocol and read its status. Loading, commands, failure detail and re-attaching were tested against a fake Cast TV. **Casting a video to a real TV with the helper has not been tried yet.** The panel was checked visually with sample data (light and dark).
+- **Windows:** the helper's installer supports macOS and Linux only.
 
 - **What has been tested:** Phase 1 casting was tested by the user and works. Phase 2's detection is unit-tested, and its MAIN-world hooks were checked against real hls.js playback in a browser.
 - **What the Phase 3 companion test covered:** end-to-end tests against a mock upstream (pairing, auth, relay, Range, redirects, cancellation, device binding, SSRF). Real public HLS was relayed and played back in a cross-origin hls.js player (1080p, no errors).
 - **Verified on a real Chromecast:** a DASH stream was relayed through the companion and played on the TV, so the receiver does accept media over plain `http://` from your LAN. The companion also answers Private Network Access preflights in case a receiver requires them.
 - **Firewall prompt:** your OS firewall (macOS asks on first run) must allow incoming connections to Node on port 47801, or the Chromecast can't reach the relay.
-- **Wrong LAN address:** if you are on a VPN or have several network adapters, the auto-detected LAN address may be one the Chromecast can't reach. Use `npm run companion -- --public-host <your-lan-ip>`.
+- **Wrong LAN address:** if you are on a VPN or have several network adapters, the auto-detected LAN address may be one the Chromecast can't reach. Add `--public-host <your-lan-ip>` to the last line of `~/.castit/host/castit-companion`.
 - **Device binding on networks that change IPs:** a session is bound to one device IP. If the Chromecast changes IP mid-cast, cast again to get a new session.
 - **What the Phase 4 FFmpeg test covered:** real FFmpeg 9.0 with VideoToolbox. A 2-minute 10-bit HEVC + Dolby Digital 5.1 + SRT MKV was analysed in 0.1 s and converted to H.264 1080p + AAC with WebVTT subtitles. The output played in a browser HLS player with the full duration shown, and a seek to 95 s resumed within 5 s. Seek-restarts produced the right segment in 0.7 s, timestamps stayed on the original timeline (within ~50 ms), and remux and play-as-is behaved correctly. A real public HLS stream was remuxed. Temp folders and FFmpeg processes were gone after each cast and after Ctrl-C.
 - **What has not been tested for Phase 4:** conversion with a real Chromecast. The automated real-FFmpeg test only runs when FFmpeg is installed; it is skipped otherwise.
@@ -366,10 +322,10 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 - **DASH inputs:** these can only be converted if your FFmpeg has the DASH demuxer. Homebrew's build doesn't, so DASH streams are relayed unchanged.
 - **One audio track:** only one is converted (the default). Alternative audio tracks aren't offered yet.
 - **Transcoding is CPU/GPU-heavy:** at most 2 conversion jobs run at once (the oldest is stopped). Without a hardware encoder, 4K → 1080p needs a fast CPU to stay ahead of playback.
-- **CORS and Referer checks** stop Direct Casting for many HLS/DASH sites. Castit detects both and uses the companion when it's paired.
+- **CORS and Referer checks** stop Direct Casting for many HLS/DASH sites. Castit detects both and relays through the helper.
 - **Streams that need login cookies** fail even through the companion, because it never forwards browser cookies. Neither engine can relay tokens bound to your browser or IP; the companion keeps the same IP, so IP-bound tokens usually do work through it.
 - **The probe fetches the stream URL once.** A strictly single-use URL could be used up by the probe. This is rare.
-- **The master playlist is guessed until the popup inspects it**, from request order and file name. The badge count may include variant playlists until then.
+- **The master playlist is guessed until the panel inspects it**, from request order and file name. The badge count may include variant playlists until then.
 - **Inspection sends extra requests without cookies.** Manifests that need cookies show as "authentication required", even though the page itself plays them.
 - **Not seen:** players that fetch media from Web Workers or service workers may not be attributed to the right frame. Players using MediaSource inside workers bypass the MAIN-world hook (codecs unknown, still detected via the network).
 - **Possible site conflicts:** pages that check that built-ins are unmodified (rare anti-tamper scripts) could notice the four wrapped APIs.
@@ -386,12 +342,11 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 - **Players' own JavaScript APIs** (e.g. the YouTube iframe API) are not used; Castit works with the `<video>` element inside the frame.
 - **Media keys and OS media controls:** these don't carry a user gesture inside the page, so they aren't forwarded.
 - **Playback speed:** forwarded with the standard Cast `SET_PLAYBACK_RATE` message (0.5×–2×); support depends on the receiver.
-- **What has not been tested for Phase 6:** the strategy is unit-tested (ladder, codec vs. access errors, alternatives, giving up, error-code mapping), and the popup's attempt card was checked visually. A real failing site on your Chromecast has not been tried yet.
-- **TV error codes are best effort:** Castit listens for them on the Cast media channel. If a Cast SDK version keeps that channel to itself, errors stay generic and Castit falls back to the plain ladder.
+- **What has not been tested for Phase 6:** the strategy is unit-tested (ladder, codec vs. access errors, alternatives, giving up, error-code mapping), and the attempts list was checked visually. A real failing site on your Chromecast has not been tried yet.
+- **TV error codes are best effort:** the helper reads them from the Cast media channel; receivers that send none get the plain ladder.
 - **Freeze detection** covers the first 2 minutes of playback. Later problems are reported, not auto-recovered, because expired links usually need the page to be reloaded.
 - **Fullscreen badge:** the badge follows the player into fullscreen only when the fullscreen element contains it.
 - **DRM-protected streams** (Widevine, PlayReady, FairPlay, SAMPLE-AES) are detected and refused with an explanation. Castit never extracts keys or decrypts.
-- **No extension icons yet.** Chrome shows a default letter icon. Icons are planned for Phase 8.
 
 ## Roadmap
 
@@ -402,4 +357,5 @@ Keep **Automatic** selected and the companion paired. On each site: play the vid
 5. ✅ Website as remote control: page play/seek/volume/speed → TV, TV state → page, loop prevention, embedded players, restore on cast end
 6. ✅ Automatic strategy: one decision engine, TV error codes, freeze detection, recovery with resume, same-player alternatives, diagnostics
 7. ✅ Compatibility: recorded real sites as regression tests, a local movy-like test site, fixes from the findings, results matrix *(your TV checklist pending)*
-8. ✅ Polish: icons, production packaging and GitHub Pages deployment, reconnect after the controller closes, actionable error advice, casting badge, cleanup and badge coalescing
+8. ✅ Polish: icons, actionable error advice, casting badge, cleanup and badge coalescing
+9. ✅ 1.1: no controller page (the helper casts over the Cast protocol and is started by Chrome), TV discovery, translucent panel over the page, simpler UI

@@ -4,6 +4,7 @@
 //   3. what the page itself experienced (failed requests, player load errors, EME use).
 // It never declares success: only the receiver actually playing proves that.
 import type { Castability, CastabilityAssessment, CastError, ManifestSummary, RankedCandidate } from '@castit/shared';
+import { safeUrl } from './media-types.ts';
 import { summarizeManifest, type ProbeResult } from './probe.ts';
 
 const ORDER: Castability[] = ['likely', 'possible', 'unlikely', 'unsupported'];
@@ -68,13 +69,13 @@ export function assessCastability(c: RankedCandidate, probe?: ProbeResult): Cast
       transcodeHelps = `${c.container.toUpperCase()} files must be converted`;
       return blocked({
         code: 'UNSUPPORTED_CONTAINER',
-        message: `Chromecast cannot play ${c.container.toUpperCase()} files directly; the local companion can convert them with FFmpeg.`,
+        message: `Chromecast cannot play ${c.container.toUpperCase()} files directly; Castit can convert them with FFmpeg.`,
       });
     case 'webm':
       // WebM is mostly VP9 today; Chromecasts before the Ultra decode only VP8.
       if (!c.audioOnly) {
         transcodeHelps = 'WebM (VP9) may need converting for older Chromecasts';
-        lower('possible', 'WebM video is usually VP9, which older Chromecasts (before the Ultra) can’t decode; the local companion can convert it.');
+        lower('possible', 'WebM video is usually VP9, which older Chromecasts (before the Ultra) can’t decode; Castit can convert it with FFmpeg.');
       }
       break;
     case 'mkv':
@@ -144,12 +145,21 @@ export function assessCastability(c: RankedCandidate, probe?: ProbeResult): Cast
     }
   }
 
+  // Video pieces disguised as images (seg-1.png): the TV won't read them, the relay labels them right.
+  const segment = probe?.hlsMedia?.firstSegmentUri;
+  if (segment && /\.(png|jpe?g|gif|webp|bmp|ico|svg|css|js|html?|txt|json)$/i.test(safeUrl(segment)?.pathname ?? segment)) {
+    companionHelps ??= 'its video pieces are disguised as images';
+    lower('possible', 'The video pieces are disguised as image files, which the TV won’t play directly.');
+  }
+
   const codecs = c.codecs.concat(ev?.manifest?.codecs ?? []).join(',');
-  if (/\b(hvc1|hev1)/i.test(codecs)) {
+  // A master with H.264 variants next to HEVC/AV1 ones plays fine: the TV picks what it can decode.
+  const h264 = /\b(avc1|avc3)/i.test(codecs);
+  if (/\b(hvc1|hev1)/i.test(codecs) && !h264) {
     transcodeHelps ??= 'HEVC video may need converting for this Chromecast';
     lower('possible', 'HEVC video needs a Chromecast with Google TV / Ultra.');
   }
-  if (/\bav01/i.test(codecs)) {
+  if (/\bav01/i.test(codecs) && !h264) {
     transcodeHelps ??= 'AV1 video may need converting for this Chromecast';
     lower('possible', 'AV1 video needs a recent Chromecast / Google TV device.');
   }

@@ -1,54 +1,68 @@
+// Castit's UI. Normally shown as a panel over the page (an iframe placed by the content script,
+// see lib/panel.ts); on pages extensions can't touch it opens as Chrome's regular popup instead.
 import {
   formatTime,
-  type CompanionPairResult,
-  type CompanionStatus,
-  type EngineMode,
-  type CastProgress,
-  type HighlightResult,
-  type TranscodeSettings,
   PHASE_LABELS,
   type CandidateView,
   type CastError,
+  type CastProgress,
   type CastStatus,
   type CommandResponse,
+  type EngineMode,
   type PopupCastResponse,
   type PopupRequest,
   type PopupState,
   type RemoteCommand,
+  type TranscodeSettings,
 } from '@castit/shared';
 import { adviceFor, emptyPageExplanation } from '../lib/advice.ts';
 import { isPrimaryCandidate, selectMainCandidate } from '../lib/rank.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
+const embedded = window.top !== window;
+
+// Static icons (no user data), set with innerHTML.
+const ICON = {
+  play: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 4.5v15l13-7.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 4h4.5v16H6zM13.5 4H18v16h-4.5z"/></svg>',
+  sound:
+    '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16.5 8.5a5 5 0 0 1 0 7"/></svg>',
+  muted:
+    '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
+};
 let tabId = -1;
 let state: PopupState | null = null;
 let selectedId: string | undefined;
 let userSelected = false;
 let seeking = false;
+let casting = false;
 
 function send<T>(message: PopupRequest): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
 }
 
-function advice(error: CastError): string | undefined {
-  return adviceFor(error, { companion: state?.companion?.state ?? 'offline', ffmpeg: !!state?.companion?.ffmpeg });
+/** Tells the page panel to close (embedded) or closes Chrome's popup. */
+function close(): void {
+  if (embedded) window.parent.postMessage({ castitPanel: 'close' }, '*');
+  else window.close();
 }
 
-/** Error box: what went wrong (with detail), then what the user can do about it. */
+/** Error box: what went wrong, then what the user can do about it. */
 function showError(error: CastError | null): void {
   const box = $('error');
   box.hidden = !error;
   box.replaceChildren();
   if (!error) return;
   const what = document.createElement('div');
-  what.textContent = error.message + (error.detail ? ` (${error.detail})` : '');
+  what.textContent = error.message;
+  if (error.detail) what.title = error.detail;
   box.append(what);
-  const tip = advice(error);
+  const tip = adviceFor(error, { companion: state?.companion?.state ?? 'offline', ffmpeg: !!state?.companion?.ffmpeg });
   if (tip) {
     const next = document.createElement('div');
     next.className = 'advice';
-    next.textContent = `What you can do: ${tip}`;
+    next.textContent = tip;
     box.append(next);
   }
 }
@@ -63,13 +77,11 @@ function render(): void {
   if (!s) return;
   // A background worker from an older build may omit newer fields: render what we can.
   const parts = [
-    () => renderStale(s),
-    () => renderConnection(s),
+    () => ($('stale').hidden = s.buildId === __BUILD_ID__),
+    () => renderDevices(s),
     () => renderCandidates(s),
     () => renderNow(s.castStatus),
-    () => renderReconnect(s),
-    () => renderSync(s),
-    () => renderCompanion(s.companion, s.engineMode, s.transcodeSettings),
+    () => renderSettings(s.engineMode, s.transcodeSettings, !!s.companion.ffmpeg),
     () => renderNotice(s.notice),
     () => renderProgress(s.progress),
   ];
@@ -82,40 +94,38 @@ function render(): void {
   }
 }
 
-/** A cast is (probably) still running, but nothing can control it until the controller is back. */
-function renderReconnect(s: PopupState): void {
-  $('now-reconnect').hidden = s.controllerConnected || !s.castStatus?.sessionActive;
+/** The TV picker in the header, or why there is none. */
+function renderDevices(s: PopupState): void {
+  const missing = s.companion.state !== 'ready';
+  $('setup').hidden = s.companion.state !== 'missing';
+  const select = $<HTMLSelectElement>('device');
+  const status = $('device-status');
+  const devices = s.devices ?? [];
+  select.hidden = missing || devices.length === 0;
+  status.hidden = !select.hidden || s.companion.state === 'missing';
+  status.textContent = s.companion.state === 'offline' ? 'Helper stopped' : 'No TV found';
+  if (devices.length && document.activeElement !== select) {
+    const casting = s.castStatus?.sessionActive ? devices.find((d) => d.name === s.castStatus?.deviceName)?.id : undefined;
+    select.replaceChildren(...devices.map((d) => new Option(d.name, d.id)));
+    select.value = casting ?? (devices.some((d) => d.id === s.deviceId) ? s.deviceId! : devices[0]!.id);
+  }
 }
 
-function renderStale(s: PopupState): void {
-  $('stale').hidden = s.buildId === __BUILD_ID__;
+function renderSettings(mode: EngineMode, transcode: TranscodeSettings, ffmpeg: boolean): void {
+  const select = $<HTMLSelectElement>('engine-mode');
+  if (document.activeElement !== select) select.value = mode;
+  $('transcode-settings').hidden = !ffmpeg;
+  const profile = $<HTMLSelectElement>('tc-profile');
+  const quality = $<HTMLSelectElement>('tc-quality');
+  if (document.activeElement !== profile) profile.value = transcode.profile;
+  if (document.activeElement !== quality) quality.value = transcode.quality;
 }
 
-function renderSync(s: PopupState): void {
-  const line = $('now-sync');
-  const sync = s.sync;
-  line.hidden = sync.state === 'off';
-  line.textContent =
-    sync.state === 'active'
-      ? `The page’s own player is your remote${sync.frameHost ? ` (player on ${sync.frameHost})` : ''}: play, pause and seek there.`
-      : (sync.reason ?? '');
-}
-
-const PROGRESS_LABEL: Record<CastProgress['state'], string> = {
-  running: 'Trying…',
-  playing: 'Playing',
-  failed: 'Failed',
-  cancelled: 'Stopped',
-};
-
-/** Shown when something went wrong or more than one way was needed. */
+/** Shown while Castit tries more than one way, and when it failed. */
 function renderProgress(progress: CastProgress | undefined): void {
   const card = $('progress');
-  card.hidden = !progress || (progress.state === 'playing' && progress.lines.length <= 1);
+  card.hidden = !progress || progress.state === 'playing' || progress.state === 'cancelled' || (progress.state === 'running' && progress.lines.length < 2);
   if (!progress || card.hidden) return;
-  const pill = $('progress-state');
-  pill.textContent = PROGRESS_LABEL[progress.state];
-  pill.className = `pill small ${progress.state === 'playing' ? 'on' : progress.state === 'running' ? 'warn' : ''}`;
   $('progress-list').replaceChildren(
     ...progress.lines.map((line) => {
       const div = document.createElement('div');
@@ -125,10 +135,8 @@ function renderProgress(progress: CastProgress | undefined): void {
     }),
   );
   $('stop-trying').hidden = progress.state !== 'running';
-  const tip = progress.state === 'failed' && progress.final ? advice(progress.final) : undefined;
-  const advise = $('progress-advice');
-  advise.hidden = !tip;
-  advise.textContent = tip ? `What you can do: ${tip}` : '';
+  $('copy-diag').hidden = progress.state !== 'failed';
+  if (progress.state === 'failed' && progress.final) showError(progress.final);
 }
 
 async function copyDiagnostics(button: HTMLElement): Promise<void> {
@@ -145,83 +153,15 @@ async function copyDiagnostics(button: HTMLElement): Promise<void> {
 
 function renderNotice(notice: string | null): void {
   const box = $('notice');
-  // The attempts card already states a final failure; don't say it twice.
+  // The error box already states a final failure; don't say it twice.
   if (notice && notice === state?.progress?.final?.message) notice = null;
   box.hidden = !notice;
   box.textContent = notice ?? '';
 }
 
-const COMPANION_LABEL: Record<CompanionStatus['state'], string> = {
-  offline: 'Not running',
-  unpaired: 'Not paired',
-  rejected: 'Pairing revoked',
-  paired: 'Ready',
-};
-
-const COMPANION_PILL: Record<CompanionStatus['state'], string> = {
-  offline: 'Companion off',
-  unpaired: 'Companion: pair it',
-  rejected: 'Companion: pair again',
-  paired: 'Companion ✓',
-};
-
-function renderCompanion(status: CompanionStatus, mode: EngineMode, transcode: TranscodeSettings): void {
-  const pill = $('companion-state');
-  pill.textContent = COMPANION_LABEL[status.state];
-  pill.className = `pill small ${status.state === 'paired' ? 'on' : status.state === 'offline' ? '' : 'warn'}`;
-  const header = $('companion-pill');
-  header.textContent = COMPANION_PILL[status.state];
-  header.className = `pill ${status.state === 'paired' ? 'on' : status.state === 'offline' ? '' : 'warn'}`;
-  header.title =
-    status.state === 'paired'
-      ? `Local companion running and paired (${status.mediaBaseUrl ?? ''})`
-      : status.state === 'offline'
-        ? 'Local companion not running (optional). Click for details.'
-        : 'Local companion running but not paired. Click to pair.';
-  const hint = $('companion-hint');
-  hint.textContent =
-    status.state === 'offline'
-      ? 'Optional. Relays streams the Chromecast cannot fetch itself (missing CORS, Referer checks). Start it with `npm run companion`.'
-      : status.state === 'paired'
-        ? `Relaying via ${status.mediaBaseUrl ?? 'your computer'} when needed. ${
-            status.ffmpeg
-              ? `Converting with FFmpeg (${status.hwEncoder ? `hardware: ${status.hwEncoder.replace('h264_', '')}` : 'software'}).`
-              : 'FFmpeg not found: streams the TV cannot decode will not be converted.'
-          }`
-        : 'Enter the pairing code shown in the companion terminal.';
-  $('transcode-settings').hidden = !(status.state === 'paired' && status.ffmpeg);
-  const profile = $<HTMLSelectElement>('tc-profile');
-  const quality = $<HTMLSelectElement>('tc-quality');
-  if (document.activeElement !== profile) profile.value = transcode.profile;
-  if (document.activeElement !== quality) quality.value = transcode.quality;
-  $('pair-form').hidden = status.state !== 'unpaired' && status.state !== 'rejected';
-  $('companion-forget').hidden = status.state !== 'paired' && status.state !== 'rejected';
-  const select = $<HTMLSelectElement>('engine-mode');
-  if (document.activeElement !== select) select.value = mode;
-  // Draw attention to setup when a candidate would benefit from the companion.
-  const details = $<HTMLDetailsElement>('companion');
-  if (status.state !== 'paired' && state?.candidates.some((c) => c.assessment.companionHelps)) details.open = true;
-}
-
-function renderConnection(s: PopupState): void {
-  const pill = $('connection');
-  const status = s.castStatus;
-  if (status?.sessionActive) {
-    pill.textContent = `● ${status.deviceName ?? 'Cast device'}`;
-    pill.className = 'pill on';
-  } else if (s.controllerConnected) {
-    pill.textContent = status && !status.devicesAvailable ? 'No Cast devices found' : 'Controller ready';
-    pill.className = 'pill';
-  } else {
-    pill.textContent = 'Controller closed';
-    pill.className = 'pill';
-  }
-}
-
 const KIND_LABEL: Record<string, string> = { hls: 'HLS', dash: 'DASH', progressive: 'FILE', unknown: '?' };
 const LEVEL_LABEL: Record<string, string> = {
-  likely: 'Castable',
-  possible: 'Maybe castable',
+  possible: 'Maybe',
   unlikely: 'Unlikely',
   unsupported: 'Not castable',
 };
@@ -239,7 +179,7 @@ function renderCandidates(s: PopupState): void {
   $('others-list').replaceChildren(...others.map((c) => candidateRow(c, s)));
   const fold = $<HTMLDetailsElement>('others');
   fold.hidden = others.length === 0;
-  $('others-summary').textContent = `Other stream files on this page (${others.length})`;
+  $('others-summary').textContent = `${others.length} more stream file${others.length === 1 ? '' : 's'}`;
   if (others.some((c) => c.id === selectedId)) fold.open = true;
 
   const empty = $('empty');
@@ -247,46 +187,29 @@ function renderCandidates(s: PopupState): void {
   empty.textContent = emptyPageExplanation({ drmKeySystems: s.drmKeySystems ?? [], mediaSource: s.mediaSourceDetected });
 
   const selected = s.candidates.find((c) => c.id === selectedId);
-  const castButton = $<HTMLButtonElement>('cast');
-  castButton.disabled = !selected || selected.assessment.level === 'unsupported';
+  const button = $<HTMLButtonElement>('cast');
+  button.hidden = s.candidates.length === 0;
+  if (!casting) {
+    button.disabled = !selected || selected.assessment.level === 'unsupported' || s.companion.state !== 'ready' || !s.devices?.length;
+    button.textContent = selected && selected.id === s.castingCandidateId ? 'Cast again' : 'Cast';
+  }
 }
 
-/** Where on the page this stream plays, in plain words. */
-function whereText(c: CandidateView): { text: string; playing: boolean } {
+/** Playback state of the row's page player, in a few words. */
+function playerText(c: CandidateView): { text: string; playing: boolean } {
   const v = c.video;
-  const place = c.embedded && c.frameHost ? ` · embedded player from ${c.frameHost}` : '';
-  if (!v) {
-    return {
-      text: c.kind === 'hls' || c.kind === 'dash' ? `Stream not linked to a player on the page${place}` : `Not linked to a player on the page${place}`,
-      playing: false,
-    };
-  }
+  if (!v) return { text: c.embedded && c.frameHost ? `In ${c.frameHost}` : 'Not in a player', playing: false };
   const playing = !v.paused && !v.ended;
-  const state = playing ? '▶ Playing' : v.ended ? 'Ended' : v.currentTime > 0 ? 'Paused' : 'Not started';
-  const time = v.live ? 'LIVE' : v.duration ? `${formatTime(v.currentTime)} / ${formatTime(v.duration)}` : formatTime(v.currentTime);
-  const size = v.width > 0 ? `${v.width}×${v.height} player` : 'hidden player';
-  return { text: `${state} · ${time} · ${size}${v.visible ? '' : ' (off-screen)'}${place}`, playing };
+  const status = playing ? '▶ Playing' : v.ended ? 'Ended' : v.currentTime > 0 ? 'Paused' : 'Not started';
+  const time = v.live ? 'LIVE' : v.duration ? `${formatTime(v.currentTime)} / ${formatTime(v.duration)}` : '';
+  return { text: time ? `${status} · ${time}` : status, playing };
 }
 
-const HOVER_PROBLEMS: Record<Exclude<HighlightResult, 'shown'>, string> = {
-  unreachable: 'Can’t point this out: reload the page (it was opened before Castit was last updated).',
-  'not-found': 'This player is no longer on the page.',
-};
-
-/** Outlines the row's video on the page; explains on the row when that isn't possible. */
-async function highlight(c: CandidateView | null, row?: HTMLElement): Promise<void> {
-  if (!c?.video) {
-    void send({ type: 'popup/highlight', tabId, frameId: lastHighlightFrame, videoKey: null }).catch(() => undefined);
-    return;
-  }
-  lastHighlightFrame = c.videoFrameId ?? c.frameId;
-  const result = await send<HighlightResult>({ type: 'popup/highlight', tabId, frameId: lastHighlightFrame, videoKey: c.video.key }).catch(
-    (): HighlightResult => 'unreachable',
-  );
-  const note = row?.querySelector<HTMLElement>('.hover-note');
-  if (!note) return;
-  note.hidden = result === 'shown';
-  note.textContent = result === 'shown' ? '' : HOVER_PROBLEMS[result];
+/** Outlines the row's video on the page while hovered. */
+function highlight(c: CandidateView | null): void {
+  const frameId = c?.video ? (c.videoFrameId ?? c.frameId) : lastHighlightFrame;
+  if (c?.video) lastHighlightFrame = frameId;
+  void send({ type: 'popup/highlight', tabId, frameId, videoKey: c?.video?.key ?? null }).catch(() => undefined);
 }
 let lastHighlightFrame = 0;
 
@@ -294,8 +217,8 @@ function candidateRow(c: CandidateView, s: PopupState): HTMLElement {
   const row = document.createElement('label');
   row.className = `candidate${c.id === selectedId ? ' selected' : ''}`;
   row.title = c.url;
-  row.addEventListener('mouseenter', () => void highlight(c, row));
-  row.addEventListener('mouseleave', () => void highlight(null));
+  row.addEventListener('mouseenter', () => highlight(c));
+  row.addEventListener('mouseleave', () => highlight(null));
 
   const radio = document.createElement('input');
   radio.type = 'radio';
@@ -306,7 +229,6 @@ function candidateRow(c: CandidateView, s: PopupState): HTMLElement {
     userSelected = true;
     if (state) renderCandidates(state);
   });
-  radio.addEventListener('focus', () => void highlight(c, row));
 
   const name = document.createElement('div');
   name.className = 'name';
@@ -318,68 +240,33 @@ function candidateRow(c: CandidateView, s: PopupState): HTMLElement {
     name.prepend(onTv);
   }
 
-  const where = whereText(c);
-  const whereLine = document.createElement('div');
-  whereLine.className = `where${where.playing ? ' playing' : ''}`;
-  whereLine.textContent = where.text;
-
-  const meta = document.createElement('div');
-  meta.className = 'meta';
+  const player = playerText(c);
+  const sub = document.createElement('div');
+  sub.className = `sub${player.playing ? ' playing' : ''}`;
+  sub.textContent = player.text;
   const tag = (text: string, cls = '') => {
     const span = document.createElement('span');
     span.className = `tag ${cls}`;
     span.textContent = text;
-    meta.append(span);
+    sub.append(span);
   };
   tag(KIND_LABEL[c.kind] ?? c.kind.toUpperCase());
-  if (c.container !== 'unknown' && c.kind === 'progressive') tag(c.container.toUpperCase());
-  if (c.manifest?.role === 'master' && c.manifest.variantCount > 1) tag(`${c.manifest.variantCount} qualities`);
   if (c.quality) tag(c.quality);
   if (c.live) tag('LIVE');
-  const codec = videoCodecLabel(c.codecs);
-  if (codec) tag(codec);
   if (c.isAd) tag('AD');
-  tag(LEVEL_LABEL[c.assessment.level] ?? c.assessment.level, `level-${c.assessment.level}`);
-  let host = '';
-  try {
-    host = new URL(c.url).hostname;
-  } catch {
-    /* keep empty */
-  }
-  meta.append(host);
+  const level = LEVEL_LABEL[c.assessment.level];
+  if (level) tag(level, `level-${c.assessment.level}`);
+  row.append(radio, name, sub);
 
-  const hoverNote = document.createElement('div');
-  hoverNote.className = 'hover-note';
-  hoverNote.hidden = true;
-  row.append(radio, name, whereLine, meta, hoverNote);
-  // Notes only for the selected row, to keep the list scannable.
-  if (c.id === selectedId && c.assessment.notes.length) {
-    const notes = document.createElement('ul');
-    notes.className = 'notes';
-    for (const note of c.assessment.notes) {
-      const li = document.createElement('li');
-      li.textContent = note;
-      notes.append(li);
-    }
-    row.append(notes);
+  // Why a selected stream may not work, in one line.
+  const why = c.assessment.blocker?.message ?? (c.assessment.level === 'likely' ? undefined : c.assessment.notes[0]);
+  if (c.id === selectedId && why) {
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = why;
+    row.append(note);
   }
   return row;
-}
-
-const CODEC_LABELS: Array<[RegExp, string]> = [
-  [/^(avc1|avc3)/i, 'H.264'],
-  [/^(hvc1|hev1)/i, 'HEVC'],
-  [/^av01/i, 'AV1'],
-  [/^(vp09|vp9)/i, 'VP9'],
-  [/^vp8/i, 'VP8'],
-];
-
-function videoCodecLabel(codecs: string[]): string | undefined {
-  for (const codec of codecs) {
-    const match = CODEC_LABELS.find(([re]) => re.test(codec));
-    if (match) return match[1];
-  }
-  return undefined;
 }
 
 function renderNow(status: CastStatus | null): void {
@@ -389,28 +276,15 @@ function renderNow(status: CastStatus | null): void {
   if (status?.phase === 'error' && status.error) showError(status.error);
   if (!status || !active) return;
 
-  $('now-device').textContent =
-    (status.deviceName ? ` · ${status.deviceName}` : '') +
-    (status.engine === 'companion'
-      ? ' · via companion'
-      : status.engine === 'transcode'
-        ? status.plan?.action === 'remux'
-          ? ' · repackaged'
-          : status.plan?.action === 'transcode'
-            ? ' · converted'
-            : ' · via companion'
-        : '');
-  const plan = $('now-plan');
-  plan.hidden = !status.plan?.details.length || status.plan.action === 'direct';
-  plan.textContent = status.plan ? status.plan.details.join(' · ') : '';
-  const subsRow = $('now-subs-row');
   const subs = $<HTMLSelectElement>('now-subs');
-  subsRow.hidden = !status.textTracks?.length;
+  $('now-subs-row').hidden = !status.textTracks?.length;
   if (status.textTracks?.length && document.activeElement !== subs) {
     subs.replaceChildren(new Option('Off', ''), ...status.textTracks.map((t) => new Option(t.name, String(t.id))));
     subs.value = status.activeTextTrack ? String(status.activeTextTrack) : '';
   }
-  $('now-phase').textContent = PHASE_LABELS[status.phase] ?? status.phase;
+  const phase = $('now-phase');
+  phase.textContent = PHASE_LABELS[status.phase] ?? status.phase;
+  phase.className = `pill${status.phase === 'playing' ? ' on' : ''}`;
   $('now-title').textContent = status.title ?? '';
 
   const seek = $<HTMLInputElement>('now-seek');
@@ -420,8 +294,8 @@ function renderNow(status: CastStatus | null): void {
   $('now-time').textContent = formatTime(seeking ? Number(seek.value) : status.currentTime);
   $('now-duration').textContent = status.live ? 'LIVE' : formatTime(status.duration);
 
-  $('btn-play').textContent = status.phase === 'playing' || status.phase === 'buffering' ? '❚❚' : '▶';
-  $('btn-mute').textContent = status.muted ? '🔇' : '🔊';
+  $('btn-play').innerHTML = status.phase === 'playing' || status.phase === 'buffering' ? ICON.pause : ICON.play;
+  $('btn-mute').innerHTML = status.muted ? ICON.muted : ICON.sound;
   const volume = $<HTMLInputElement>('now-volume');
   if (document.activeElement !== volume) volume.value = String(status.volume);
 }
@@ -435,17 +309,15 @@ function wire(): void {
   $('cast').addEventListener('click', async () => {
     if (!selectedId) return;
     const button = $<HTMLButtonElement>('cast');
+    casting = true;
     button.disabled = true;
-    button.textContent = 'Checking stream…';
+    button.textContent = 'Starting…';
     showError(null);
-    const response = await send<PopupCastResponse>({ type: 'popup/cast', tabId, candidateId: selectedId });
-    if (response.ok) {
-      button.textContent = response.controller === 'opened' ? 'Opening controller…' : 'Sent to Chromecast';
-    } else {
-      showError(response.error);
-      button.textContent = 'Cast';
-      button.disabled = false;
-    }
+    const deviceId = $<HTMLSelectElement>('device').value || undefined;
+    const response = await send<PopupCastResponse>({ type: 'popup/cast', tabId, candidateId: selectedId, deviceId });
+    casting = false;
+    if (!response.ok) showError(response.error);
+    await refresh();
   });
 
   $('btn-play').addEventListener('click', () => void command({ type: 'togglePlay' }));
@@ -463,47 +335,21 @@ function wire(): void {
     seeking = false;
     void command({ type: 'seek', time: Number(seek.value) });
   });
-
   const volume = $<HTMLInputElement>('now-volume');
   volume.addEventListener('change', () => void command({ type: 'volume', level: Number(volume.value) }));
+  $('now-subs').addEventListener('change', () => {
+    const value = $<HTMLSelectElement>('now-subs').value;
+    void command({ type: 'subtitles', trackId: value ? Number(value) : null });
+  });
 
-  $('open-controller').addEventListener('click', () => void send({ type: 'popup/open-controller' }));
-  $('reload-ext').addEventListener('click', () => chrome.runtime.reload());
-  $('reconnect').addEventListener('click', () => void send({ type: 'popup/open-controller' }));
-  $('copy-diag').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
-  $('copy-diag-footer').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
-  $('stop-trying').addEventListener('click', async () => {
-    await send({ type: 'popup/cast-cancel' });
-    await refresh();
+  $('device').addEventListener('change', () => void send({ type: 'popup/set-device', deviceId: $<HTMLSelectElement>('device').value }));
+  $('settings-toggle').addEventListener('click', () => {
+    const settings = $('settings');
+    settings.hidden = !settings.hidden;
+    $('settings-toggle').classList.toggle('on', !settings.hidden);
   });
-  $('companion-pill').addEventListener('click', () => {
-    const details = $<HTMLDetailsElement>('companion');
-    details.open = true;
-    details.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  });
-  window.addEventListener('blur', () => void highlight(null));
-
-  $('pair-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const input = $<HTMLInputElement>('pair-code');
-    const button = $<HTMLButtonElement>('pair-btn');
-    button.disabled = true;
-    const result = await send<CompanionPairResult>({ type: 'popup/companion-pair', code: input.value });
-    button.disabled = false;
-    const line = $('pair-result');
-    line.hidden = false;
-    if (result.ok) {
-      input.value = '';
-      line.className = 'small ok';
-      line.textContent = 'Paired ✓ The companion will be used when a stream needs it.';
-      await refresh();
-    } else {
-      line.className = 'small bad';
-      line.textContent = result.error;
-    }
-  });
-  $('companion-forget').addEventListener('click', async () => {
-    await send({ type: 'popup/companion-forget' });
+  $('engine-mode').addEventListener('change', async () => {
+    await send({ type: 'popup/set-engine', mode: $<HTMLSelectElement>('engine-mode').value as EngineMode });
     await refresh();
   });
   const saveTranscode = async () => {
@@ -516,44 +362,69 @@ function wire(): void {
   };
   $('tc-profile').addEventListener('change', () => void saveTranscode());
   $('tc-quality').addEventListener('change', () => void saveTranscode());
-  $('now-subs').addEventListener('change', () => {
-    const value = $<HTMLSelectElement>('now-subs').value;
-    void command({ type: 'subtitles', trackId: value ? Number(value) : null });
-  });
-  $('engine-mode').addEventListener('change', async () => {
-    await send({ type: 'popup/set-engine', mode: $<HTMLSelectElement>('engine-mode').value as EngineMode });
+
+  $('reload-ext').addEventListener('click', () => chrome.runtime.reload());
+  $('copy-diag').addEventListener('click', (e) => void copyDiagnostics(e.currentTarget as HTMLElement));
+  $('stop-trying').addEventListener('click', async () => {
+    await send({ type: 'popup/cast-cancel' });
     await refresh();
   });
+  $('close').addEventListener('click', close);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+  });
+  window.addEventListener('blur', () => highlight(null));
 
-  // Live updates: receiver status and tab detections are written to storage.session by the worker.
+  // Live updates: receiver status, devices and tab detections are written to storage.session by the worker.
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const refreshSoon = () => {
+    refreshTimer ??= setTimeout(() => {
+      refreshTimer = undefined;
+      void refresh();
+    }, 300);
+  };
   chrome.storage.session.onChanged.addListener((changes) => {
-    if (changes.castStatus && state) {
+    if (!state) return;
+    if (changes.castStatus) {
+      const previous = state.castStatus;
       state.castStatus = (changes.castStatus.newValue as CastStatus | undefined) ?? null;
-      renderConnection(state);
       renderNow(state.castStatus);
-      // A fresh status means a controller is talking again: pick up its connection state.
-      if (!state.controllerConnected) void refresh();
+      if (previous?.sessionActive !== state.castStatus?.sessionActive || previous?.requestId !== state.castStatus?.requestId) refreshSoon();
     }
-    if (changes.syncTarget && state) void refresh();
-    if (changes.castContext && state) void refresh();
-    if (changes.castNotice && state) {
+    if (changes.castNotice) {
       state.notice = (changes.castNotice.newValue as string | undefined) ?? null;
       renderNotice(state.notice);
     }
-    if (changes[`tab:${tabId}`] && !refreshTimer) {
-      refreshTimer = setTimeout(() => {
-        refreshTimer = undefined;
-        void refresh();
-      }, 300);
-    }
+    if (changes.syncTarget || changes.castContext || changes.devices || changes[`tab:${tabId}`]) refreshSoon();
   });
 }
 
+/** The panel loads the popup page from inside the web page; only Castit's own panel may. */
+async function authorized(): Promise<boolean> {
+  if (!embedded) return true;
+  const token = new URLSearchParams(location.hash.slice(1)).get('panel');
+  const stored = (await chrome.storage.session.get('panelToken')).panelToken as string | undefined;
+  return !!token && token === stored;
+}
+
+/** Keeps the page panel as tall as the content. */
+function reportSize(): void {
+  const post = () => window.parent.postMessage({ castitPanel: 'size', height: document.body.getBoundingClientRect().height }, '*');
+  new ResizeObserver(post).observe(document.body);
+  post();
+}
+
 async function main(): Promise<void> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (embedded) document.documentElement.classList.add('embedded');
+  if (!(await authorized())) {
+    document.body.replaceChildren();
+    return;
+  }
+  const tab = (embedded ? await chrome.tabs.getCurrent() : undefined) ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   tabId = tab?.id ?? -1;
+  $('close').hidden = !embedded;
   wire();
+  if (embedded) reportSize();
   await refresh();
 }
 

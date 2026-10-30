@@ -16,7 +16,7 @@ import type {
 import { safeUrl } from './media-types.ts';
 
 export interface CompanionAvailability {
-  /** Running and paired. */
+  /** The companion is running. */
   ready: boolean;
   /** FFmpeg available in the companion. */
   ffmpeg: boolean;
@@ -37,7 +37,7 @@ export function withCompanion(a: CastabilityAssessment, comp: CompanionAvailabil
   if (a.blocker) {
     if (a.blocker.code !== 'UNSUPPORTED_CONTAINER' || !a.transcodeHelps) return a;
     if (!canTranscode(comp)) {
-      return { ...a, notes: [...a.notes, 'Start the local companion with FFmpeg installed to convert this stream.'] };
+      return { ...a, notes: [...a.notes, 'Install FFmpeg (brew install ffmpeg) to convert this stream.'] };
     }
     return {
       level: 'likely',
@@ -52,14 +52,14 @@ export function withCompanion(a: CastabilityAssessment, comp: CompanionAvailabil
     return { ...a, engine: 'transcode', notes: [...a.notes, 'Will convert with FFmpeg on your computer.'] };
   }
   if (mode === 'companion' && comp.ready) {
-    return { ...a, engine: 'companion', notes: [...a.notes, 'Will relay through the local companion.'] };
+    return { ...a, engine: 'companion', notes: [...a.notes, 'Will relay through this computer.'] };
   }
   if (a.transcodeHelps && canTranscode(comp)) {
     return {
       ...a,
       level: a.level === 'unlikely' ? 'possible' : 'likely',
       engine: 'transcode',
-      notes: [...a.notes, `The companion will check the stream and convert it if needed (${a.transcodeHelps}).`],
+      notes: [...a.notes, `Will check the stream and convert it if needed (${a.transcodeHelps}).`],
     };
   }
   if (a.companionHelps && comp.ready) {
@@ -67,11 +67,11 @@ export function withCompanion(a: CastabilityAssessment, comp: CompanionAvailabil
       ...a,
       level: a.level === 'unlikely' ? 'possible' : 'likely',
       engine: 'companion',
-      notes: [...a.notes, `Will relay through the local companion (${a.companionHelps}).`],
+      notes: [...a.notes, `Will relay through this computer (${a.companionHelps}).`],
     };
   }
   if ((a.companionHelps || a.transcodeHelps) && !comp.ready) {
-    return { ...a, notes: [...a.notes, 'The local companion could help with this stream; it is not running or not paired.'] };
+    return { ...a, notes: [...a.notes, 'Castit’s helper could fix this stream; run `npm run setup`.'] };
   }
   return a;
 }
@@ -80,11 +80,11 @@ export type EngineChoice = { engine: CastEngine } | { error: CastError };
 
 const companionMissing: CastError = {
   code: 'COMPANION_UNAVAILABLE',
-  message: 'The local companion is not running or not paired. Start it with `npm run companion` and pair it in the popup.',
+  message: 'Castit’s helper is not running. Run `npm run setup` in the Castit folder.',
 };
 const ffmpegMissing: CastError = {
   code: 'TRANSCODE_FAILED',
-  message: 'The local companion has no FFmpeg, so it cannot convert streams. Install FFmpeg and restart the companion.',
+  message: 'FFmpeg is not installed, so Castit cannot convert streams. Install it with `brew install ffmpeg`.',
 };
 
 /** First engine to try. Blockers other than an FFmpeg-fixable container are handled by the caller. */

@@ -1,30 +1,57 @@
-// Control API contract between the extension and the local companion (http://127.0.0.1:47800).
+// Contract between the extension and the companion: a native messaging host that Chrome starts
+// when the extension connects (and stops when it disconnects). Messages are JSON over stdio, so
+// nothing listens on a control port and no pairing is needed: Chrome only lets Castit talk to it.
+import type { CastError, CastRequest, CastStatus, RemoteCommand } from './types.ts';
 
-export const COMPANION_DEFAULT_URL = 'http://127.0.0.1:47800';
-export const COMPANION_PROTOCOL = 1;
+export const NATIVE_HOST_NAME = 'com.castit.companion';
+export const COMPANION_PROTOCOL = 2;
 
-export interface CompanionHealth {
+/** A Cast device found on the local network (mDNS). */
+export interface CastDeviceInfo {
+  /** Stable device id (mDNS TXT "id"). */
+  id: string;
+  name: string;
+  model?: string;
+  host: string;
+  port: number;
+}
+
+/** Sent by the companion in reply to "hello". */
+export interface CompanionHello {
   name: 'castit-companion';
   version: string;
   protocol: number;
-  /** At least one browser has been paired. */
-  paired: boolean;
-  /** LAN base URL the Chromecast fetches media from. */
+  /** LAN base URL the Chromecast fetches relayed media from. */
   mediaBaseUrl: string;
   ffmpeg: boolean;
-  ffmpegVersion?: string;
   /** Hardware H.264 encoder in use (e.g. h264_videotoolbox), null = software (libx264). */
-  hwEncoder?: string | null;
+  hwEncoder: string | null;
+  devices: CastDeviceInfo[];
 }
 
-export interface CompanionPairRequest {
-  code: string;
-  label?: string;
-}
+export type CompanionRequest =
+  /** active: the cast that was playing when the companion last stopped, to re-attach to. */
+  | { type: 'hello'; active?: { device: CastDeviceInfo; request: CastRequest } | null }
+  | { type: 'devices' }
+  | { type: 'create-session'; request: CreateSessionRequest }
+  | { type: 'delete-session'; sessionId: string }
+  | { type: 'cast'; device: CastDeviceInfo; request: CastRequest }
+  | { type: 'command'; command: RemoteCommand };
 
-export interface CompanionPairResponse {
-  apiKey: string;
-}
+export type CompanionErrorCode = 'BAD_REQUEST' | 'BLOCKED_ADDRESS' | 'INTERNAL';
+
+export type CompanionReply =
+  | { id: number; ok: true; result?: unknown }
+  | { id: number; ok: false; error: string; code: CompanionErrorCode };
+
+/** Pushed by the companion at any time. */
+export type CompanionEvent =
+  | { type: 'event/status'; status: CastStatus }
+  | { type: 'event/load-result'; requestId: string; ok: true }
+  | { type: 'event/load-result'; requestId: string; ok: false; error: CastError }
+  /** Playback broke or froze after it had started (position in seconds, for resuming). */
+  | { type: 'event/playback-problem'; requestId: string; error: CastError; position: number }
+  | { type: 'event/devices'; devices: CastDeviceInfo[] };
 
 /**
  * Explicit, per-cast upstream request settings. Cookies and Authorization are never accepted
@@ -57,6 +84,8 @@ export interface CreateSessionRequest {
   url: string;
   kind: 'hls' | 'dash' | 'progressive' | 'unknown';
   context: UpstreamContext;
+  /** The TV the stream is for; HLS variants it can't play are left out. */
+  profile?: ReceiverProfile;
   /** Ask the companion to analyse the media with FFmpeg and convert it when needed. */
   transcode?: TranscodeOptions;
 }
@@ -127,15 +156,10 @@ export interface CompanionSessionInfo {
   bytesServed: number;
 }
 
-export interface CompanionErrorBody {
-  error: string;
-  code: 'BAD_REQUEST' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'BLOCKED_ADDRESS' | 'NOT_FOUND' | 'PAIRING_FAILED' | 'INTERNAL';
-}
-
 /** Extension-side view of the companion, shown in the popup. */
 export interface CompanionStatus {
-  state: 'offline' | 'unpaired' | 'paired' | 'rejected';
-  url: string;
+  /** missing: not installed (`npm run setup`); offline: installed but failed to start. */
+  state: 'ready' | 'missing' | 'offline';
   version?: string;
   mediaBaseUrl?: string;
   ffmpeg?: boolean;

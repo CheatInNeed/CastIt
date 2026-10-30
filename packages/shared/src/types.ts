@@ -1,4 +1,4 @@
-// Domain types shared by the extension, the controller page and the companion.
+// Domain types shared by the extension and the companion.
 import type { MediaPlanSummary, TextTrackInfo } from './companion.ts';
 
 export type StreamKind =
@@ -207,7 +207,6 @@ export type CastErrorCode =
   | 'SESSION_CANCELLED'
   | 'RECEIVER_LOAD_FAILED'
   | 'PLAYBACK_TIMEOUT'
-  | 'CONTROLLER_UNAVAILABLE'
   | 'COMPANION_UNAVAILABLE'
   | 'TRANSCODE_FAILED'
   | 'SYNC_UNAVAILABLE'
@@ -222,7 +221,7 @@ export interface CastError {
 export type HlsSegmentFormat = 'ts' | 'fmp4' | 'aac' | 'mp3' | 'ac3' | 'e_ac3' | 'ts_aac';
 export type HlsVideoSegmentFormat = 'mpeg2_ts' | 'fmp4';
 
-/** Everything the controller needs to build a chrome.cast.media.LoadRequest. */
+/** Everything the companion needs to load a stream on the TV. */
 export interface CastRequest {
   requestId: string;
   sourceTabId: number;
@@ -247,7 +246,6 @@ export interface CastRequest {
 
 export type CastPhase =
   | 'idle'
-  | 'awaiting-device'
   | 'connecting'
   | 'loading'
   | 'buffering'
@@ -256,11 +254,11 @@ export type CastPhase =
   | 'ended'
   | 'error';
 
-/** Receiver state as reported by the controller page. */
+/** Receiver state as reported by the companion. */
 export interface CastStatus {
   phase: CastPhase;
   sessionActive: boolean;
-  /** Whether any Cast device is visible on the network (from CastContext). */
+  /** Whether any Cast device is visible on the network. */
   devicesAvailable: boolean;
   deviceName?: string;
   title?: string;

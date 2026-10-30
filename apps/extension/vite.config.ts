@@ -6,16 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-export const controllerUrl = process.env.CASTIT_CONTROLLER_URL ?? 'http://localhost:5173/';
 
-/** Emits manifest.json with externally_connectable limited to the controller origin. */
+/** Copies manifest.json and the icons into the build. */
 function manifest(): Plugin {
   return {
     name: 'castit-manifest',
     generateBundle() {
-      const json = JSON.parse(readFileSync(`${here}manifest.json`, 'utf8'));
-      json.externally_connectable = { matches: [`${new URL(controllerUrl).origin}/*`] };
-      this.emitFile({ type: 'asset', fileName: 'manifest.json', source: JSON.stringify(json, null, 2) });
+      this.emitFile({ type: 'asset', fileName: 'manifest.json', source: readFileSync(`${here}manifest.json`, 'utf8') });
       for (const icon of readdirSync(`${here}icons`)) {
         this.emitFile({ type: 'asset', fileName: `icons/${icon}`, source: readFileSync(`${here}icons/${icon}`) });
       }
@@ -26,7 +23,6 @@ function manifest(): Plugin {
 export default defineConfig({
   root: `${here}src`,
   define: {
-    __CONTROLLER_URL__: JSON.stringify(controllerUrl),
     // Lets the popup notice a background worker still running code from an older build.
     __BUILD_ID__: JSON.stringify(String(Date.now())),
   },

@@ -1,7 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "controller", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:controller"], "port": 5173 },
     { "name": "testpage", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:testpage"], "port": 5174 }
   ]
 }

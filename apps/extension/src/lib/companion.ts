@@ -1,98 +1,142 @@
-// Extension-side client for the local companion's control API.
+// Extension-side connection to the companion, a native messaging host that Chrome starts when
+// Castit connects (installed once with `npm run setup`). Requests carry an id and get one reply;
+// events (receiver status, devices) arrive at any time. While the port is open Chrome keeps both
+// the companion and this service worker running.
 import {
-  COMPANION_DEFAULT_URL,
   COMPANION_PROTOCOL,
-  type CompanionErrorBody,
-  type CompanionHealth,
+  NATIVE_HOST_NAME,
+  type CompanionErrorCode,
+  type CompanionEvent,
+  type CompanionHello,
+  type CompanionReply,
+  type CompanionRequest,
   type CompanionStatus,
   type CreateSessionRequest,
   type CreateSessionResponse,
 } from '@castit/shared';
 
-export interface CompanionConfig {
-  url: string;
-  apiKey?: string;
-}
-
-const STORAGE_KEY = 'companion';
-
-export async function loadCompanionConfig(): Promise<CompanionConfig> {
-  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] as CompanionConfig | undefined;
-  return { url: stored?.url ?? COMPANION_DEFAULT_URL, apiKey: stored?.apiKey };
-}
-
-export async function saveCompanionConfig(config: CompanionConfig): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: config });
-}
-
 export class CompanionError extends Error {
-  readonly status: number;
-  readonly code: CompanionErrorBody['code'] | 'OFFLINE';
-  constructor(status: number, code: CompanionError['code'], message: string) {
+  readonly code: CompanionErrorCode | 'MISSING' | 'OFFLINE';
+  constructor(code: CompanionError['code'], message: string) {
     super(message);
-    this.status = status;
     this.code = code;
   }
 }
 
-async function call<T>(config: CompanionConfig, path: string, init: RequestInit = {}, timeoutMs = 15_000): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${config.url}${path}`, {
-      ...init,
-      credentials: 'omit',
-      cache: 'no-store',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        ...(init.body ? { 'content-type': 'application/json' } : {}),
-        ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
-      },
-    });
-  } catch (e) {
-    throw new CompanionError(0, 'OFFLINE', `The local companion is not running at ${config.url}.`);
-  }
-  if (res.status === 204) return undefined as T;
-  const body = (await res.json().catch(() => ({}))) as T & Partial<CompanionErrorBody>;
-  if (!res.ok) throw new CompanionError(res.status, body.code ?? 'INTERNAL', body.error ?? `Companion answered HTTP ${res.status}.`);
-  return body;
+const MISSING = 'Castit’s helper is not installed. Run `npm run setup` in the Castit folder once.';
+
+type Hello = Extract<CompanionRequest, { type: 'hello' }>;
+
+let port: chrome.runtime.Port | null = null;
+let hello: Promise<CompanionHello> | null = null;
+let lastError: CompanionError | null = null;
+let nextId = 1;
+const pending = new Map<number, { resolve: (value: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+let onEvent: (event: CompanionEvent) => void = () => undefined;
+let helloRequest: () => Promise<Hello> = async () => ({ type: 'hello' });
+
+/** Where companion events go (the background registers this once). */
+export function setCompanionHandlers(handlers: { event: (event: CompanionEvent) => void; hello: () => Promise<Hello> }): void {
+  onEvent = handlers.event;
+  helloRequest = handlers.hello;
 }
 
-export async function companionStatus(config: CompanionConfig): Promise<CompanionStatus> {
-  let health: CompanionHealth;
-  try {
-    health = await call<CompanionHealth>(config, '/api/health', {}, 1500);
-  } catch (e) {
-    return { state: 'offline', url: config.url, error: (e as Error).message };
-  }
-  const base = { url: config.url, version: health.version, mediaBaseUrl: health.mediaBaseUrl, ffmpeg: health.ffmpeg, hwEncoder: health.hwEncoder };
-  if (health.name !== 'castit-companion' || health.protocol !== COMPANION_PROTOCOL) {
-    return { ...base, state: 'offline', error: 'Incompatible companion version.' };
-  }
-  if (!config.apiKey) return { ...base, state: 'unpaired' };
-  try {
-    await call(config, '/api/sessions', {}, 1500);
-    return { ...base, state: 'paired' };
-  } catch (e) {
-    if (e instanceof CompanionError && e.status === 401) return { ...base, state: 'rejected', error: 'Pairing was revoked; pair again.' };
-    return { ...base, state: 'offline', error: (e as Error).message };
-  }
-}
-
-export async function pairCompanion(config: CompanionConfig, code: string): Promise<CompanionConfig> {
-  const { apiKey } = await call<{ apiKey: string }>(config, '/api/pair', {
-    method: 'POST',
-    body: JSON.stringify({ code, label: `Chrome (${navigator.platform || 'unknown'})` }),
+function post(port: chrome.runtime.Port, request: CompanionRequest, timeoutMs: number): Promise<unknown> {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new CompanionError('OFFLINE', 'Castit’s helper did not answer.'));
+    }, timeoutMs);
+    pending.set(id, { resolve, reject, timer });
+    try {
+      port.postMessage({ ...request, id });
+    } catch (e) {
+      clearTimeout(timer);
+      pending.delete(id);
+      reject(new CompanionError('OFFLINE', String(e)));
+    }
   });
-  const next = { ...config, apiKey };
-  await saveCompanionConfig(next);
-  return next;
 }
 
-export function createCompanionSession(config: CompanionConfig, request: CreateSessionRequest): Promise<CreateSessionResponse> {
+/** Connects (Chrome starts the companion if needed) and returns its hello. */
+export function connectCompanion(): Promise<CompanionHello> {
+  if (hello) return hello;
+  const opened = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  port = opened;
+  opened.onMessage.addListener((message: CompanionReply | CompanionEvent) => {
+    if ('id' in message) {
+      const waiter = pending.get(message.id);
+      if (!waiter) return;
+      clearTimeout(waiter.timer);
+      pending.delete(message.id);
+      if (message.ok) waiter.resolve(message.result);
+      else waiter.reject(new CompanionError(message.code, message.error));
+      return;
+    }
+    onEvent(message);
+  });
+  opened.onDisconnect.addListener(() => {
+    const reason = chrome.runtime.lastError?.message ?? '';
+    lastError = /not found|forbidden/i.test(reason)
+      ? new CompanionError('MISSING', MISSING)
+      : new CompanionError('OFFLINE', `Castit’s helper stopped${reason ? ` (${reason})` : ''}.`);
+    if (port === opened) {
+      port = null;
+      hello = null;
+    }
+    for (const { reject, timer } of pending.values()) {
+      clearTimeout(timer);
+      reject(lastError);
+    }
+    pending.clear();
+  });
+  hello = (async () => {
+    const result = (await post(opened, await helloRequest(), 10_000)) as CompanionHello;
+    if (result.protocol !== COMPANION_PROTOCOL) {
+      throw new CompanionError('OFFLINE', 'Castit’s helper is outdated. Run `npm run setup` again.');
+    }
+    lastError = null;
+    return result;
+  })();
+  hello.catch(() => {
+    if (port === opened) disconnectCompanion();
+  });
+  return hello;
+}
+
+export function disconnectCompanion(): void {
+  const current = port;
+  port = null;
+  hello = null;
+  current?.disconnect();
+}
+
+export function companionConnected(): boolean {
+  return port !== null;
+}
+
+export async function companionRequest<T>(request: CompanionRequest, timeoutMs = 15_000): Promise<T> {
+  await connectCompanion();
+  if (!port) throw lastError ?? new CompanionError('OFFLINE', 'Castit’s helper is not running.');
+  return (await post(port, request, timeoutMs)) as T;
+}
+
+export async function companionStatus(): Promise<CompanionStatus> {
+  try {
+    const h = await connectCompanion();
+    return { state: 'ready', version: h.version, mediaBaseUrl: h.mediaBaseUrl, ffmpeg: h.ffmpeg, hwEncoder: h.hwEncoder };
+  } catch (e) {
+    const error = e instanceof CompanionError ? e : (lastError ?? new CompanionError('OFFLINE', String(e)));
+    return { state: error.code === 'MISSING' ? 'missing' : 'offline', error: error.message };
+  }
+}
+
+export function createCompanionSession(request: CreateSessionRequest): Promise<CreateSessionResponse> {
   // FFmpeg analysis (when requested) can take a while on slow upstreams.
-  return call<CreateSessionResponse>(config, '/api/sessions', { method: 'POST', body: JSON.stringify(request) }, request.transcode ? 45_000 : 15_000);
+  return companionRequest<CreateSessionResponse>({ type: 'create-session', request }, request.transcode ? 45_000 : 15_000);
 }
 
-export async function deleteCompanionSession(config: CompanionConfig, sessionId: string): Promise<void> {
-  await call(config, `/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }, 3000).catch(() => undefined);
+export async function deleteCompanionSession(sessionId: string): Promise<void> {
+  await companionRequest({ type: 'delete-session', sessionId }, 3000).catch(() => undefined);
 }

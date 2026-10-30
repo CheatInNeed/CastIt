@@ -3,14 +3,12 @@
 // MV3 service workers are suspended after ~30 s idle and restarted on the next event, so all
 // state that must survive lives in chrome.storage.session; listeners are registered
 // synchronously at top level so Chrome can wake the worker for them. The only in-memory state
-// is the live controller Port (a Port cannot be persisted; the controller reconnects when the
-// worker restarts) and short-lived throttling caches.
+// is the companion's native messaging port (lib/companion.ts; a restarted companion re-attaches
+// to the running cast) and short-lived throttling caches.
 import {
-  CONTROLLER_PORT_NAME,
-  PROTOCOL_VERSION,
   type BackgroundToContent,
-  type BackgroundToController,
   type CandidateView,
+  type CastDeviceInfo,
   type CastabilityAssessment,
   type CastError,
   type CastRequest,
@@ -18,7 +16,7 @@ import {
   type CastProgress,
   type CastStatus,
   type CommandResponse,
-  type CompanionPairResult,
+  type CompanionEvent,
   type EngineMode,
   type HighlightResult,
   type StreamKind,
@@ -27,7 +25,6 @@ import {
   type TranscodeSettings,
   type UpstreamContext,
   type ContentToBackground,
-  type ControllerToBackground,
   type PopupCastResponse,
   type PopupRequest,
   type PopupState,
@@ -38,13 +35,12 @@ import { assessCastability } from './lib/castability.ts';
 import { buildCastRequest } from './lib/cast-request.ts';
 import {
   CompanionError,
+  companionRequest,
   companionStatus,
   createCompanionSession,
   deleteCompanionSession,
-  loadCompanionConfig,
-  pairCompanion,
-  saveCompanionConfig,
-  type CompanionConfig,
+  disconnectCompanion,
+  setCompanionHandlers,
 } from './lib/companion.ts';
 import { upstreamContextFor, withCompanion } from './lib/engine.ts';
 import {
@@ -73,23 +69,24 @@ import {
   recordSubframeNavigation,
 } from './lib/store.ts';
 
-const CONTROLLER_URL = __CONTROLLER_URL__;
-const CONTROLLER_ORIGIN = new URL(CONTROLLER_URL).origin;
-
 const KEY = {
   tab: (tabId: number) => `tab:${tabId}`,
   castStatus: 'castStatus',
   pendingCast: 'pendingCast',
-  /** The request playing on the TV (for a reopened controller to adopt). */
+  /** The cast playing on the TV ({device, request}), for a restarted companion to re-attach to. */
   activeCast: 'activeCast',
-  controllerToken: 'controllerToken',
-  controllerTabId: 'controllerTabId',
   castContext: 'castContext',
   castNotice: 'castNotice',
   companionSession: 'companionSession',
   engineMode: 'engineMode', // chrome.storage.local
   transcodeSettings: 'transcodeSettings', // chrome.storage.local
   syncTarget: 'syncTarget',
+  /** TVs the companion found on the network. */
+  devices: 'devices',
+  /** The TV the user cast to last. */
+  deviceId: 'deviceId', // chrome.storage.local
+  /** Per-open secret that lets only Castit's own page panel load the popup UI. */
+  panelToken: 'panelToken',
 } as const;
 
 const DEFAULT_TRANSCODE: TranscodeSettings = { profile: 'compat', quality: 'auto' };
@@ -109,6 +106,7 @@ interface CastInput {
 /** One cast from the popup: the strategy's progress plus what is needed to continue it. */
 interface CastContext {
   tabId: number;
+  device: CastDeviceInfo;
   strategy: StrategyState;
   inputs: Record<string, CastInput>;
   activeRequestId: string;
@@ -331,11 +329,6 @@ async function inspectManifests(tabId: number): Promise<void> {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void serialized(KEY.tab(tabId), () => chrome.storage.session.remove(KEY.tab(tabId)));
-  void (async () => {
-    if ((await chrome.storage.session.get(KEY.controllerTabId))[KEY.controllerTabId] === tabId) {
-      await chrome.storage.session.remove(KEY.controllerTabId);
-    }
-  })();
 });
 
 // Content scripts declared in the manifest only run in pages loaded after install; inject into open tabs.
@@ -351,89 +344,64 @@ chrome.runtime.onInstalled.addListener(async () => {
   }
 });
 
-// ---------------------------------------------------------------- controller connection
+// ---------------------------------------------------------------- companion (casting + relay)
 
-let controllerPort: chrome.runtime.Port | null = null;
-
-async function controllerToken(): Promise<string> {
-  const stored = (await chrome.storage.session.get(KEY.controllerToken))[KEY.controllerToken] as string | undefined;
-  if (stored) return stored;
-  const bytes = crypto.getRandomValues(new Uint8Array(24));
-  const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  await chrome.storage.session.set({ [KEY.controllerToken]: token });
-  return token;
+interface ActiveCast {
+  device: CastDeviceInfo;
+  request: CastRequest;
 }
 
-function postToController(message: BackgroundToController): boolean {
-  if (!controllerPort) return false;
-  try {
-    controllerPort.postMessage(message);
-    return true;
-  } catch {
-    controllerPort = null;
-    return false;
-  }
-}
-
-// Only the configured controller origin can connect (also enforced by externally_connectable),
-// and it must present the per-browser-session token handed to it in the URL fragment.
-chrome.runtime.onConnectExternal.addListener((port) => {
-  if (port.name !== CONTROLLER_PORT_NAME || port.sender?.origin !== CONTROLLER_ORIGIN) {
-    port.disconnect();
-    return;
-  }
-  let authenticated = false;
-
-  port.onMessage.addListener(async (raw: ControllerToBackground) => {
-    if (!authenticated) {
-      if (raw.type !== 'controller/hello') return;
-      if (raw.version !== PROTOCOL_VERSION || raw.token !== (await controllerToken())) {
-        port.postMessage({ type: 'controller/rejected', reason: 'Invalid or outdated pairing token. Open the controller from the Castit popup.' } satisfies BackgroundToController);
-        port.disconnect();
-        return;
-      }
-      authenticated = true;
-      controllerPort = port;
-      if (port.sender?.tab?.id !== undefined) {
-        await chrome.storage.session.set({ [KEY.controllerTabId]: port.sender.tab.id });
-      }
-      const stored = await chrome.storage.session.get([KEY.pendingCast, KEY.activeCast]);
-      const pending = (stored[KEY.pendingCast] as CastRequest | undefined) ?? null;
-      const active = (stored[KEY.activeCast] as CastRequest | undefined) ?? null;
-      port.postMessage({ type: 'controller/welcome', pending, active } satisfies BackgroundToController);
-      return;
-    }
-
-    switch (raw.type) {
-      case 'controller/status':
-        await onControllerStatus(raw.status);
-        break;
-      case 'controller/playback-problem':
-        await onPlaybackProblem(raw.requestId, raw.error, raw.position);
-        break;
-      case 'controller/load-result': {
-        const pending = (await chrome.storage.session.get(KEY.pendingCast))[KEY.pendingCast] as CastRequest | undefined;
-        if (pending?.requestId === raw.requestId) await chrome.storage.session.remove(KEY.pendingCast);
-        if (!raw.ok) {
-          await onAttemptFailed(raw.requestId, raw.error);
-          break;
-        }
-        await onAttemptPlaying(raw.requestId);
-        if (pending) await chrome.storage.session.set({ [KEY.activeCast]: pending });
-        await chrome.storage.session.remove(KEY.castNotice);
-        // The TV is playing: turn the page's player into a remote (this also pauses it).
-        await startSync(raw.requestId, pending);
-        break;
-      }
-    }
-  });
-
-  port.onDisconnect.addListener(() => {
-    if (controllerPort === port) controllerPort = null;
-  });
+setCompanionHandlers({
+  hello: async () => ({
+    type: 'hello',
+    active: ((await chrome.storage.session.get(KEY.activeCast))[KEY.activeCast] as ActiveCast | undefined) ?? null,
+  }),
+  event: (event) => void onCompanionEvent(event),
 });
 
-async function onControllerStatus(status: CastStatus): Promise<void> {
+async function onCompanionEvent(event: CompanionEvent): Promise<void> {
+  switch (event.type) {
+    case 'event/status':
+      await onReceiverStatus(event.status);
+      break;
+    case 'event/devices':
+      await chrome.storage.session.set({ [KEY.devices]: event.devices });
+      break;
+    case 'event/playback-problem':
+      await onPlaybackProblem(event.requestId, event.error, event.position);
+      break;
+    case 'event/load-result': {
+      const pending = (await chrome.storage.session.get(KEY.pendingCast))[KEY.pendingCast] as CastRequest | undefined;
+      if (pending?.requestId === event.requestId) await chrome.storage.session.remove(KEY.pendingCast);
+      if (!event.ok) {
+        await onAttemptFailed(event.requestId, event.error);
+        break;
+      }
+      await onAttemptPlaying(event.requestId);
+      const context = await castContext();
+      if (pending && context) await chrome.storage.session.set({ [KEY.activeCast]: { device: context.device, request: pending } satisfies ActiveCast });
+      await chrome.storage.session.remove(KEY.castNotice);
+      // The TV is playing: turn the page's player into a remote (this also pauses it).
+      await startSync(event.requestId, pending);
+      break;
+    }
+  }
+}
+
+/** With nothing on the TV for a while, let Chrome stop the companion (it restarts on demand). */
+const IDLE_DISCONNECT_MS = 5 * 60_000;
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleIdleDisconnect(): void {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(async () => {
+    const status = (await chrome.storage.session.get(KEY.castStatus))[KEY.castStatus] as CastStatus | undefined;
+    if (status?.sessionActive) return scheduleIdleDisconnect();
+    disconnectCompanion();
+  }, IDLE_DISCONNECT_MS);
+}
+
+async function onReceiverStatus(status: CastStatus): Promise<void> {
   const previous = (await chrome.storage.session.get(KEY.castStatus))[KEY.castStatus] as CastStatus | undefined;
   await chrome.storage.session.set({ [KEY.castStatus]: status });
   if (!status.sessionActive) await chrome.storage.session.remove(KEY.activeCast);
@@ -443,30 +411,44 @@ async function onControllerStatus(status: CastStatus): Promise<void> {
     if (context) scheduleBadge(context.tabId);
   }
   await routeToPage(status);
-  // The controller needs a click (user gesture) to open Chrome's device picker; bring it forward.
-  if (status.phase === 'awaiting-device' && previous?.phase !== 'awaiting-device') await focusController();
 }
 
-async function focusController(): Promise<boolean> {
-  const tabId = (await chrome.storage.session.get(KEY.controllerTabId))[KEY.controllerTabId] as number | undefined;
-  if (tabId === undefined) return false;
+/** The TV to cast to: the one asked for, else the last one used, else the first one found. */
+async function chooseDevice(deviceId?: string): Promise<CastDeviceInfo | undefined> {
+  const devices = await companionRequest<CastDeviceInfo[]>({ type: 'devices' }).catch(() => [] as CastDeviceInfo[]);
+  const preferred = deviceId ?? ((await chrome.storage.local.get(KEY.deviceId))[KEY.deviceId] as string | undefined);
+  const device = devices.find((d) => d.id === preferred) ?? devices[0];
+  if (device) await chrome.storage.local.set({ [KEY.deviceId]: device.id });
+  return device;
+}
+
+// ---------------------------------------------------------------- page panel
+
+// The toolbar button shows Castit as a panel over the page (an iframe of the popup page), which,
+// unlike Chrome's popup window, can have rounded corners and a translucent, blurred background.
+chrome.action.onClicked.addListener((tab) => void togglePanel(tab));
+
+async function togglePanel(tab: chrome.tabs.Tab): Promise<void> {
+  if (tab.id === undefined) return;
+  const token = crypto.randomUUID();
+  await chrome.storage.session.set({ [KEY.panelToken]: token });
+  const message: BackgroundToContent = { type: 'content/toggle-panel', token };
+  const send = () => chrome.tabs.sendMessage(tab.id!, message, { frameId: 0 });
   try {
-    const tab = await chrome.tabs.update(tabId, { active: true });
-    if (tab?.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
-    return true;
+    await send();
+    return;
   } catch {
-    await chrome.storage.session.remove(KEY.controllerTabId);
-    return false;
+    // No Castit script in this page yet (it was open before Castit was installed or reloaded).
   }
-}
-
-async function openController(): Promise<void> {
-  if (await focusController()) return;
-  const url = new URL(CONTROLLER_URL);
-  url.searchParams.set('ext', chrome.runtime.id);
-  url.hash = `token=${await controllerToken()}`;
-  const tab = await chrome.tabs.create({ url: url.href });
-  if (tab.id !== undefined) await chrome.storage.session.set({ [KEY.controllerTabId]: tab.id });
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    await send();
+  } catch {
+    // Pages extensions may not touch (chrome://, the Web Store): show the classic popup instead.
+    await chrome.action.setPopup({ tabId: tab.id, popup: 'popup/index.html' });
+    await chrome.action.openPopup().catch(() => undefined);
+    await chrome.action.setPopup({ tabId: tab.id, popup: '' });
+  }
 }
 
 // ---------------------------------------------------------------- popup + content messages
@@ -481,21 +463,23 @@ async function transcodeSettings(): Promise<TranscodeSettings> {
 }
 
 async function companion() {
-  const config = await loadCompanionConfig();
-  const status = await companionStatus(config);
-  const ready = status.state === 'paired';
-  return { config, status, ready, ffmpeg: ready && !!status.ffmpeg };
+  const status = await companionStatus();
+  const ready = status.state === 'ready';
+  scheduleIdleDisconnect();
+  return { status, ready, ffmpeg: ready && !!status.ffmpeg };
 }
 
 async function popupState(tabId: number): Promise<PopupState> {
-  const [state, tab, session, comp, mode, transcode] = await Promise.all([
+  const [state, tab, session, comp, mode, transcode, local] = await Promise.all([
     readTab(tabId),
     chrome.tabs.get(tabId).catch(() => undefined),
-    chrome.storage.session.get([KEY.castStatus, KEY.castNotice, KEY.syncTarget, KEY.castContext]),
+    chrome.storage.session.get([KEY.castStatus, KEY.castNotice, KEY.syncTarget, KEY.castContext, KEY.devices]),
     companion(),
     engineMode(),
     transcodeSettings(),
+    chrome.storage.local.get(KEY.deviceId),
   ]);
+  if (comp.ready) void companionRequest({ type: 'devices' }).catch(() => undefined);
   void inspectManifests(tabId);
   void sweepClosedTabs();
   const candidates: CandidateView[] = rankCandidates(state).map((c) => ({
@@ -514,8 +498,8 @@ async function popupState(tabId: number): Promise<PopupState> {
     mediaSourceDetected: mediaSourceDetected(state),
     drmKeySystems: [...new Set(Object.values(state.frames).flatMap((f) => f.emeKeySystems ?? []))],
     castStatus: (session[KEY.castStatus] as CastStatus | undefined) ?? null,
-    controllerConnected: controllerPort !== null,
-    controllerUrl: CONTROLLER_URL,
+    devices: comp.ready ? ((session[KEY.devices] as CastDeviceInfo[] | undefined) ?? []) : [],
+    deviceId: local[KEY.deviceId] as string | undefined,
     sync: syncInfo(session[KEY.syncTarget] as SyncTarget | undefined, (session[KEY.castStatus] as CastStatus | undefined) ?? null),
     castingCandidateId: castingCandidate(
       session[KEY.castContext] as CastContext | undefined,
@@ -529,7 +513,7 @@ async function popupState(tabId: number): Promise<PopupState> {
 
 const err = (code: CastError['code'], message: string, detail?: string): CastError => ({ code, message, detail });
 
-async function castCandidate(tabId: number, candidateId: string): Promise<PopupCastResponse> {
+async function castCandidate(tabId: number, candidateId: string, deviceId?: string): Promise<PopupCastResponse> {
   // Ask every frame for a fresh snapshot so the resume position is current.
   await chrome.tabs.sendMessage(tabId, { type: 'content/refresh' } satisfies BackgroundToContent).catch(() => undefined);
   await new Promise((r) => setTimeout(r, 250));
@@ -542,10 +526,16 @@ async function castCandidate(tabId: number, candidateId: string): Promise<PopupC
   }
 
   const [mode, comp] = await Promise.all([engineMode(), companion()]);
+  if (!comp.ready) return { ok: false, error: err('COMPANION_UNAVAILABLE', comp.status.error ?? 'Castit’s helper is not running.') };
+  const device = await chooseDevice(deviceId);
+  if (!device) {
+    return { ok: false, error: err('NO_DEVICE', 'No TV found. Check that it is on and on the same Wi-Fi as this computer.') };
+  }
   const streams = [chosen, ...alternativesFor(chosen, ranked)];
   const playerFrame = chosen.videoFrameId ?? chosen.frameId;
   const context: CastContext = {
     tabId,
+    device,
     strategy: newStrategy(mode, streams.map((c) => ({ id: c.id, label: c.label }))),
     inputs: {},
     activeRequestId: '',
@@ -610,7 +600,7 @@ async function saveContext(context: CastContext): Promise<void> {
 
 /**
  * Executes strategy steps until one is handed to the Chromecast (its result arrives later via
- * the controller) or the strategy gives up. Failures that happen before the receiver is involved
+ * the companion) or the strategy gives up. Failures that happen before the receiver is involved
  * (companion refused, stream blocked) advance the strategy right here.
  */
 async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnType<typeof companion>>): Promise<PopupCastResponse> {
@@ -620,7 +610,7 @@ async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnTy
       context.strategy.state = 'failed';
       context.strategy.final = step.error;
       await saveContext(context);
-      await replaceCompanionSession(comp.config, null);
+      await replaceCompanionSession(null);
       if (context.strategy.attempts.length > 0) {
         await chrome.storage.session.set({ [KEY.castNotice]: step.error.message });
       }
@@ -655,7 +645,7 @@ async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnTy
     let request = base;
     let delivery: AttemptRecord['delivery'];
     if (step.engine !== 'direct') {
-      const relayed = await relayViaCompanion(comp.config, base, input.kind, input.upstream, step.engine === 'transcode' ? step.force : undefined);
+      const relayed = await relayViaCompanion(base, input.kind, input.upstream, step.engine === 'transcode' ? step.force : undefined);
       if (!('requestId' in relayed)) {
         step = await fail(relayed, step.engine);
         continue;
@@ -663,7 +653,7 @@ async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnTy
       request = relayed;
       if (step.engine === 'transcode') delivery = relayed.plan && relayed.plan.action !== 'direct' ? relayed.plan.action : 'relay';
     } else {
-      await replaceCompanionSession(comp.config, null);
+      await replaceCompanionSession(null);
     }
 
     context.strategy.attempts.push({
@@ -682,9 +672,15 @@ async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnTy
       await chrome.storage.session.set({ [KEY.castNotice]: `Trying: ${attemptLabel(context.strategy.attempts.at(-1)!)}…` });
     }
 
-    if (postToController({ type: 'controller/load', request })) return { ok: true, controller: 'loading' };
-    await openController();
-    return { ok: true, controller: 'opened' };
+    try {
+      // The outcome arrives later as an event/load-result.
+      await companionRequest({ type: 'cast', device: context.device, request });
+      return { ok: true };
+    } catch (e) {
+      const error = err('COMPANION_UNAVAILABLE', (e as Error).message);
+      Object.assign(context.strategy.attempts.at(-1)!, { outcome: 'failed', error, endedAt: Date.now() });
+      step = { kind: 'give-up', error };
+    }
   }
 }
 
@@ -694,19 +690,20 @@ async function runSteps(context: CastContext, step: Step, comp: Awaited<ReturnTy
  * stream and the request points at the converted HLS output when conversion was needed.
  */
 async function relayViaCompanion(
-  config: CompanionConfig,
   direct: CastRequest,
   kind: StreamKind,
   upstream: UpstreamContext,
   transcode?: boolean,
 ): Promise<CastRequest | CastError> {
   let session;
+  const settings = await transcodeSettings();
   try {
-    session = await createCompanionSession(config, {
+    session = await createCompanionSession({
       url: direct.url,
       kind: kind === 'hls' || kind === 'dash' || kind === 'progressive' ? kind : 'unknown',
       context: upstream,
-      transcode: transcode === undefined ? undefined : { mode: transcode ? 'force' : 'auto', ...(await transcodeSettings()) },
+      profile: settings.profile,
+      transcode: transcode === undefined ? undefined : { mode: transcode ? 'force' : 'auto', ...settings },
     });
   } catch (e) {
     const code = e instanceof CompanionError && e.code === 'BLOCKED_ADDRESS' ? 'STREAM_UNAVAILABLE' : 'COMPANION_UNAVAILABLE';
@@ -714,7 +711,7 @@ async function relayViaCompanion(
   }
   const { check } = session;
   if (!check.ok) {
-    void deleteCompanionSession(config, session.sessionId);
+    void deleteCompanionSession(session.sessionId);
     if (check.status === 401 || check.status === 403) {
       return err(
         'AUTH_REQUIRED',
@@ -726,7 +723,7 @@ async function relayViaCompanion(
     }
     return err('STREAM_UNAVAILABLE', `The companion could not fetch the stream (${check.status ? `HTTP ${check.status}` : (check.error ?? 'unknown error')}).`);
   }
-  await replaceCompanionSession(config, session.sessionId);
+  await replaceCompanionSession(session.sessionId);
   const media = session.media;
   if (!media) {
     // Relayed unchanged (no conversion requested, needed, or possible).
@@ -750,9 +747,9 @@ async function relayViaCompanion(
 }
 
 /** Keeps at most one companion session per browser: the one currently cast. */
-async function replaceCompanionSession(config: CompanionConfig, sessionId: string | null): Promise<void> {
+async function replaceCompanionSession(sessionId: string | null): Promise<void> {
   const previous = (await chrome.storage.session.get(KEY.companionSession))[KEY.companionSession] as string | undefined;
-  if (previous && previous !== sessionId) void deleteCompanionSession(config, previous);
+  if (previous && previous !== sessionId) void deleteCompanionSession(previous);
   if (sessionId) await chrome.storage.session.set({ [KEY.companionSession]: sessionId });
   else await chrome.storage.session.remove(KEY.companionSession);
 }
@@ -814,9 +811,8 @@ async function cancelCast(): Promise<void> {
   if (!context || context.strategy.state !== 'running') return;
   context.strategy.state = 'cancelled';
   await saveContext(context);
-  void loadCompanionConfig().then((config) => replaceCompanionSession(config, null));
   await chrome.storage.session.set({ [KEY.castNotice]: 'Stopped trying.' });
-  sendCommand({ type: 'stop' });
+  await sendCommand({ type: 'stop' });
 }
 
 function progressFor(context: CastContext | undefined, tabId: number): CastProgress | undefined {
@@ -840,7 +836,7 @@ async function diagnosticsReport(tabId: number): Promise<string> {
     `Castit diagnostics · ${new Date().toISOString()}`,
     `Extension ${chrome.runtime.getManifest().version} (build ${__BUILD_ID__}) · ${navigator.userAgent}`,
     `Page: ${strip(tab?.url)}`,
-    `Casting method: ${mode} · Companion: ${comp.status.state}${comp.status.state === 'paired' ? ` (FFmpeg: ${comp.status.ffmpeg ? (comp.status.hwEncoder ?? 'software') : 'no'})` : ''}`,
+    `Casting method: ${mode} · Companion: ${comp.status.state}${comp.ready ? ` ${comp.status.version} (FFmpeg: ${comp.status.ffmpeg ? (comp.status.hwEncoder ?? 'software') : 'no'})` : ''}`,
     `Receiver: ${status?.deviceName ?? '–'} · ${status?.phase ?? 'no status'}${status?.engine ? ` · ${status.engine}` : ''}${status?.error ? ` · ${status.error.code}: ${status.error.message}` : ''}`,
     '',
     'Detected streams:',
@@ -855,7 +851,8 @@ async function diagnosticsReport(tabId: number): Promise<string> {
       lines.push(`- stream ${input.label}: ${input.assessment.level}${input.assessment.notes.length ? ` · ${input.assessment.notes.join(' ')}` : ''}`);
     }
     lines.push(...describeAttempts(context.strategy).map((l) => `  ${l}`));
-    for (const a of context.strategy.attempts) if (a.error?.detail) lines.push(`  (${a.error.code}) ${a.error.detail}`);
+    const details = new Set(context.strategy.attempts.flatMap((a) => (a.error?.detail ? [`  (${a.error.code}) ${a.error.detail}`] : [])));
+    lines.push(...details);
     if (context.strategy.final) lines.push(`Result: ${context.strategy.final.code}: ${context.strategy.final.message}`);
   }
   return lines.join('\n');
@@ -865,15 +862,6 @@ async function castContext(): Promise<CastContext | undefined> {
   const context = (await chrome.storage.session.get(KEY.castContext))[KEY.castContext] as CastContext | undefined;
   // Contexts stored by an older build lack the strategy; treat them as absent.
   return context?.strategy ? context : undefined;
-}
-
-async function pairWithCompanion(code: string): Promise<CompanionPairResult> {
-  try {
-    const config = await pairCompanion(await loadCompanionConfig(), code);
-    return { ok: true, status: await companionStatus(config) };
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
 }
 
 // ---------------------------------------------------------------- page player sync
@@ -952,7 +940,7 @@ async function onPageRemote(sender: chrome.runtime.MessageSender, requestId: str
   const target = await syncTarget();
   if (!target || target.state !== 'active' || target.requestId !== requestId) return;
   if (sender.tab?.id !== target.tabId || (sender.frameId ?? 0) !== (target.frameId ?? 0)) return;
-  sendCommand(command);
+  await sendCommand(command);
 }
 
 async function onSyncLost(sender: chrome.runtime.MessageSender, requestId: string, reason: string): Promise<void> {
@@ -973,17 +961,15 @@ function syncInfo(target: SyncTarget | undefined, status: CastStatus | null): Sy
   return { state: target.state, frameHost: target.frameHost, reason: target.reason };
 }
 
-function sendCommand(command: RemoteCommand): CommandResponse {
-  if (command.type === 'disconnect') {
-    void loadCompanionConfig().then((config) => replaceCompanionSession(config, null));
+async function sendCommand(command: RemoteCommand): Promise<CommandResponse> {
+  // Stopping ends the TV's player, so the relay (if any) is no longer needed.
+  if (command.type === 'disconnect' || command.type === 'stop') void replaceCompanionSession(null);
+  try {
+    const error = await companionRequest<CastError | null>({ type: 'command', command }, 10_000);
+    return error ? { ok: false, error } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: err('COMPANION_UNAVAILABLE', (e as Error).message) };
   }
-  if (postToController({ type: 'controller/command', command })) return { ok: true };
-  // The controller tab was closed: reopen it; it rejoins the running cast by itself.
-  void openController();
-  return {
-    ok: false,
-    error: err('CONTROLLER_UNAVAILABLE', 'Reopening the Castit controller to reconnect to your TV… Try again in a moment.'),
-  };
 }
 
 chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupRequest, sender, sendResponse) => {
@@ -1012,20 +998,15 @@ chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupReques
       void popupState(message.tabId).then(sendResponse);
       return true;
     case 'popup/cast':
-      void castCandidate(message.tabId, message.candidateId)
+      void castCandidate(message.tabId, message.candidateId, message.deviceId)
         .catch((e): PopupCastResponse => ({ ok: false, error: err('INTERNAL', 'Unexpected error while preparing the cast.', String(e)) }))
         .then(sendResponse);
       return true;
     case 'popup/command':
-      sendResponse(sendCommand(message.command));
-      return false;
-    case 'popup/companion-pair':
-      void pairWithCompanion(message.code).then(sendResponse);
+      void sendCommand(message.command).then(sendResponse);
       return true;
-    case 'popup/companion-forget':
-      void loadCompanionConfig()
-        .then((config) => saveCompanionConfig({ url: config.url }))
-        .then(() => sendResponse({ ok: true }));
+    case 'popup/set-device':
+      void chrome.storage.local.set({ [KEY.deviceId]: message.deviceId }).then(() => sendResponse({ ok: true }));
       return true;
     case 'popup/set-transcode':
       void chrome.storage.local.set({ [KEY.transcodeSettings]: message.settings }).then(() => sendResponse({ ok: true }));
@@ -1047,13 +1028,10 @@ chrome.runtime.onMessage.addListener((message: ContentToBackground | PopupReques
         .catch((): HighlightResult => 'unreachable')
         .then(sendResponse);
       return true;
-    case 'popup/open-controller':
-      void openController().then(() => sendResponse({ ok: true }));
-      return true;
   }
   return false;
 });
 
 chrome.commands.onCommand.addListener((command) => {
-  if (command === 'toggle-play') sendCommand({ type: 'togglePlay' });
+  if (command === 'toggle-play') void sendCommand({ type: 'togglePlay' });
 });

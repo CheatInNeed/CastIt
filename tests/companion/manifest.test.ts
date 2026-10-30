@@ -63,6 +63,15 @@ describe('rewriteHls', () => {
     const out = rewriteHls('#EXTM3U\nhttp://10.0.0.1/a.ts\n', 'https://e.com/x.m3u8', () => null);
     expect(out).toBe('#EXTM3U\nhttp://10.0.0.1/a.ts\n');
   });
+
+  it('drops unplayable variants only while others remain, and maps hinted segments back', () => {
+    const master = '#EXTM3U\n#EXT-X-STREAM-INF:CODECS="avc1"\na.m3u8\n#EXT-X-STREAM-INF:CODECS="hvc1"\nb.m3u8\n';
+    const noHevc = (attributes: string) => !attributes.includes('hvc1');
+    expect(rewriteHls(master, 'https://e.com/m.m3u8', map, noHevc)).not.toContain('b.m3u8');
+    const onlyHevc = master.replace('avc1', 'hvc1');
+    expect(rewriteHls(onlyHevc, 'https://e.com/m.m3u8', map, noHevc)).toContain('b.m3u8');
+    expect(parseProxyPath(`/m/${SID}/https/e.com/1/seg.png~castit.mp4?sig=1`)).toEqual({ sessionId: SID, upstream: 'https://e.com/1/seg.png?sig=1', as: 'mp4' });
+  });
 });
 
 describe('rewriteDash', () => {

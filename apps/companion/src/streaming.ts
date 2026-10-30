@@ -17,6 +17,7 @@ import {
   rewriteHls,
   toProxyUrl,
 } from './manifest.ts';
+import { variantPlayable } from './plan.ts';
 import { isThisMachine, normalizeRemote, redactUrl, UpstreamBlockedError, validateUpstreamUrl } from './security.ts';
 import { originOf, type MediaSession, type SessionStore } from './sessions.ts';
 import { JobFileNotFound, type JobManager } from './transcoder.ts';
@@ -145,7 +146,7 @@ export async function handleMediaRequest(req: IncomingMessage, res: ServerRespon
   }
 
   try {
-    await relay(up, req, res, upstream, session, ctx);
+    await relay(up, req, res, upstream, session, ctx, parsed.as);
   } catch (e) {
     if (!res.destroyed && (e as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
       ctx.log(`relay error for ${redactUrl(upstream.href)}: ${(e as Error).message}`);
@@ -165,6 +166,7 @@ async function relay(
   upstream: URL,
   session: MediaSession,
   ctx: MediaContext,
+  as?: 'mp4' | 'ts',
 ): Promise<void> {
   const status = up.statusCode ?? 502;
 
@@ -187,13 +189,13 @@ async function relay(
   }
 
   const contentType = up.headers['content-type'];
-  let kind = manifestKindFromHeaders(contentType, upstream.href);
+  let kind = as ? null : manifestKindFromHeaders(contentType, upstream.href);
   // Only manifests and sniffed bodies are decoded; media bytes pass through as sent.
   let body: Readable | undefined;
   let head: Buffer | undefined;
 
   // Generic content type and no manifest extension: peek at the first bytes.
-  if (!kind && req.method === 'GET' && isGenericContentType(contentType) && !/\.(ts|m4s|mp4|m4v|webm|mkv|aac|mp3|key)$/i.test(upstream.pathname)) {
+  if (!kind && !as && req.method === 'GET' && isGenericContentType(contentType) && !/\.(ts|m4s|mp4|m4v|webm|mkv|aac|mp3|key)$/i.test(upstream.pathname)) {
     body = decoded(up);
     head = await firstChunk(body);
     kind = head ? manifestKindFromBody(head.toString('utf8', 0, Math.min(head.length, 4096))) : null;
@@ -210,7 +212,9 @@ async function relay(
       session.allowedOrigins.add(originOf(absolute));
       return toProxyUrl(ctx.mediaBase, session.id, absolute);
     };
-    const rewritten = kind === 'hls' ? rewriteHls(text, upstream.href, map) : rewriteDash(text, upstream.href, map);
+    const profile = session.profile;
+    const keep = profile ? (attributes: string) => variantPlayable(attributes, profile) : undefined;
+    const rewritten = kind === 'hls' ? rewriteHls(text, upstream.href, map, keep) : rewriteDash(text, upstream.href, map);
     const out = Buffer.from(rewritten, 'utf8');
     session.bytesServed += out.length;
     res.writeHead(status === 206 ? 200 : status, {
@@ -224,7 +228,9 @@ async function relay(
   }
 
   // Media bytes: stream through untouched.
-  const headers: Record<string, string> = { ...CORS_HEADERS, 'content-type': mediaContentType(contentType, upstream.href) };
+  // Disguised segments (see withMediaHint) are sent as what they really are.
+  const type = as === 'mp4' ? 'video/mp4' : as === 'ts' ? 'video/mp2t' : mediaContentType(contentType, upstream.href);
+  const headers: Record<string, string> = { ...CORS_HEADERS, 'content-type': type };
   for (const name of PASS_HEADERS) {
     const value = up.headers[name];
     if (typeof value === 'string') headers[name] = value;

@@ -1,6 +1,6 @@
 // Media sessions: one per cast. A session id is an unguessable capability that appears in the
 // media URLs given to the Chromecast; it expires when idle and after a hard maximum lifetime.
-import type { CompanionSessionInfo, UpstreamContext } from '@castit/shared';
+import type { CompanionSessionInfo, ReceiverProfile, UpstreamContext } from '@castit/shared';
 import { randomToken, redactUrl } from './security.ts';
 
 export interface MediaSession {
@@ -8,6 +8,8 @@ export interface MediaSession {
   upstreamUrl: string;
   kind: string;
   context: UpstreamContext;
+  /** Receiver the stream is for: master playlists drop variants it can't play. */
+  profile?: ReceiverProfile;
   /** Upstream origins (scheme://host:port) this session may fetch from. */
   allowedOrigins: Set<string>;
   createdAt: number;

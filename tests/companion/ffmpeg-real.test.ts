@@ -6,7 +6,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { CreateSessionResponse } from '@castit/shared';
 import { startCompanion, type RunningCompanion } from '../../apps/companion/src/server.ts';
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
@@ -15,7 +14,6 @@ describe.skipIf(!hasFfmpeg)('real FFmpeg conversion', () => {
   let dir = '';
   let upstream: http.Server;
   let companion: RunningCompanion;
-  let key = '';
   let base = '';
 
   beforeAll(async () => {
@@ -47,7 +45,6 @@ describe.skipIf(!hasFfmpeg)('real FFmpeg conversion', () => {
     await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
     companion = await startCompanion({
-      controlPort: 0,
       mediaPort: 0,
       mediaListenHost: '127.0.0.1',
       publicHost: '127.0.0.1',
@@ -58,9 +55,6 @@ describe.skipIf(!hasFfmpeg)('real FFmpeg conversion', () => {
       tmpRoot: dir,
       log: () => undefined,
     });
-    const code = companion.pairing.issue();
-    const res = await fetch(`${companion.controlUrl}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
-    key = ((await res.json()) as { apiKey: string }).apiKey;
   }, 60_000);
 
   afterAll(async () => {
@@ -70,12 +64,12 @@ describe.skipIf(!hasFfmpeg)('real FFmpeg conversion', () => {
   });
 
   it('analyses, transcodes to H.264/AAC HLS, seeks and extracts subtitles', async () => {
-    const res = await fetch(`${companion.controlUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({ url: `${base}/clip.mkv`, kind: 'progressive', context: {}, transcode: { mode: 'auto', profile: 'compat', quality: 'auto' } }),
+    const body = await companion.createSession({
+      url: `${base}/clip.mkv`,
+      kind: 'progressive',
+      context: {},
+      transcode: { mode: 'auto', profile: 'compat', quality: 'auto' },
     });
-    const body = (await res.json()) as CreateSessionResponse;
     expect(body.delivery).toBe('transcode');
     expect(body.plan).toMatchObject({ video: 'encode', audio: 'encode', subtitles: 1 });
     expect(body.media).toMatchObject({ seekable: true, hlsSegmentFormat: 'ts' });

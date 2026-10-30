@@ -35,7 +35,7 @@ export type Step =
   | { kind: 'give-up'; error: CastError };
 
 /** Errors that no other engine or stream can fix: stop immediately. */
-const FATAL: CastErrorCode[] = ['NO_DEVICE', 'SESSION_CANCELLED', 'CONTROLLER_UNAVAILABLE', 'INTERNAL'];
+const FATAL: CastErrorCode[] = ['NO_DEVICE', 'SESSION_CANCELLED', 'INTERNAL'];
 /**
  * Errors no engine can fix for this stream (DRM, login required, expired URL): skip straight to
  * another stream of the same player. A receiver that merely couldn't *download* the manifest is
@@ -169,12 +169,12 @@ export function overallError(s: StrategyState, last: CastError): CastError {
 
 export const ENGINE_LABEL: Record<CastEngine, string> = {
   direct: 'Direct to the Chromecast',
-  companion: 'Through the local companion',
+  companion: 'Relayed by this computer',
   transcode: 'Converted by FFmpeg',
 };
 
 const DELIVERY_LABEL: Record<NonNullable<AttemptRecord['delivery']>, string> = {
-  relay: 'Through the local companion (FFmpeg found nothing to convert)',
+  relay: 'Relayed by this computer (nothing to convert)',
   remux: 'Repackaged by FFmpeg (no re-encoding)',
   transcode: 'Converted by FFmpeg',
 };

@@ -1,14 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  controlRequestAllowed,
-  isPublicAddress,
-  matchesHash,
-  normalizeRemote,
-  PairingManager,
-  redactUrl,
-  sha256,
-  validateUpstreamUrl,
-} from '../../apps/companion/src/security.ts';
+import { isPublicAddress, normalizeRemote, redactUrl, validateUpstreamUrl } from '../../apps/companion/src/security.ts';
 
 describe('isPublicAddress', () => {
   it.each([
@@ -67,52 +58,7 @@ describe('validateUpstreamUrl', () => {
   });
 });
 
-describe('PairingManager', () => {
-  it('accepts the issued code once, with or without the dash', () => {
-    const p = new PairingManager();
-    const code = p.issue(0);
-    expect(code).toMatch(/^\d{3}-\d{3}$/);
-    expect(p.verify(code.replace('-', ''), 1)).toBe(true);
-    expect(p.verify(code, 2)).toBe(false);
-  });
-
-  it('burns the code after too many attempts', () => {
-    const p = new PairingManager(60_000, 3);
-    const code = p.issue(0);
-    const wrong = code === '000-000' ? '111-111' : '000-000';
-    expect(p.verify(wrong, 1)).toBe(false);
-    expect(p.verify(wrong, 2)).toBe(false);
-    expect(p.verify(wrong, 3)).toBe(false);
-    expect(p.verify(code, 4)).toBe(false);
-  });
-
-  it('expires', () => {
-    const p = new PairingManager(1000);
-    const code = p.issue(0);
-    expect(p.verify(code, 1000)).toBe(false);
-  });
-});
-
-describe('control request checks', () => {
-  it('allows the extension and local tools', () => {
-    expect(controlRequestAllowed('127.0.0.1:47800', undefined, 47800)).toBe(true);
-    expect(controlRequestAllowed('localhost:47800', 'chrome-extension://abcdef', 47800)).toBe(true);
-  });
-
-  it('blocks web pages and DNS rebinding', () => {
-    expect(controlRequestAllowed('127.0.0.1:47800', 'https://evil.example', 47800)).toBe(false);
-    expect(controlRequestAllowed('127.0.0.1:47800', 'null', 47800)).toBe(false);
-    expect(controlRequestAllowed('rebind.evil.example:47800', undefined, 47800)).toBe(false);
-    expect(controlRequestAllowed(undefined, undefined, 47800)).toBe(false);
-  });
-});
-
 describe('helpers', () => {
-  it('compares secrets against hashes', () => {
-    expect(matchesHash('secret', sha256('secret'))).toBe(true);
-    expect(matchesHash('other', sha256('secret'))).toBe(false);
-  });
-
   it('normalises mapped IPv4 and redacts queries', () => {
     expect(normalizeRemote('::ffff:192.168.1.5')).toBe('192.168.1.5');
     expect(redactUrl('https://e.com/a.m3u8?sig=secret')).toBe('https://e.com/a.m3u8?…');
