@@ -164,16 +164,27 @@ export function isAdUrl(url: string): boolean {
 }
 
 /** Readable label for a URL: decoded file name, or host. */
+/** File names that say nothing about the video: shown with their (short) parent folder. */
+const GENERIC_NAME = /^(master|index|playlist|manifest|main|video|stream|chunklist|prog_index|media)?\.(m3u8|mpd|mp4|webm)$/i;
+
+/** Readable label for a URL: decoded file name (with its folder when the name is generic), or host. */
 export function labelForUrl(url: string): string {
   const parsed = safeUrl(url);
   if (!parsed) return url;
-  const last = parsed.pathname.split('/').filter(Boolean).pop();
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  const decode = (s: string) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  };
+  const last = parts.pop();
   if (!last) return parsed.hostname;
-  try {
-    return decodeURIComponent(last);
-  } catch {
-    return last;
-  }
+  const name = decode(last);
+  const parent = parts.length ? decode(parts[parts.length - 1]!) : '';
+  if (GENERIC_NAME.test(name) && parent && parent.length <= 24) return `${parent}/${name}`;
+  return name;
 }
 
 /** Query parameters that change between requests for the same media (tokens, cache busters). */

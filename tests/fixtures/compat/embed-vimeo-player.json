@@ -1,0 +1,155 @@
+{
+  "name": "embed-vimeo-player",
+  "category": "Embedded third-party player (cross-origin iframe) \u00b7 DRM",
+  "about": "Vimeo embed (player.vimeo.com): hls.js player, signed HLS master (exp/acl/hmac in the path), separate audio/video playlists and fMP4 segment.m4s; paths mention /drm/cenc. Inspection shows Widevine + PlayReady DRM even on this public video, so Castit must refuse with a DRM explanation.",
+  "pageUrl": "https://player.vimeo.com/video/76979871",
+  "capturedAt": "2026-10-29T21:20:00.000Z",
+  "requests": [
+    {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/primary/sub/170-de,171-es,140662-en,4678937-fr/playlist.m3u8?ext-subs=1&locale=en&omit=av1-hevc-opus&pathsig=8c953e4f~kzSnJQR7njaukb-HcxmqznrXRj4HBt-gpcKDc04qHlU&pssh=0&r=dXM%3D&rh=4Dvbcs&sf=fmp4",
+      "type": "xmlhttprequest",
+      "at": 826
+    },
+    {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/5850de2a/media.m3u8?pathsig=8c953e4f~C9XYCpryQOwby2wkh09laJtSIxxop8YuhmsLnJ3OUDk&qsr=1&r=dXMtY2VudHJhbDE%3D&st=audio",
+      "type": "xmlhttprequest",
+      "at": 966
+    },
+    {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/5850de2a/media.m3u8?pathsig=8c953e4f~C9XYCpryQOwby2wkh09laJtSIxxop8YuhmsLnJ3OUDk&qsr=1&r=dXMtY2VudHJhbDE%3D&st=video",
+      "type": "xmlhttprequest",
+      "at": 967
+    },
+    {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/remux/avf/5850de2a-094b-4874-8dd3-4d84995b9796/segment.m4s?pathsig=8c953e4f~iOCiyFXpfUo4R4LM3Cb5e_GSQLcjnK0acDnfffWbC1o&r=dXMtd2VzdDE%3D&sid=1&st=video",
+      "type": "xmlhttprequest",
+      "at": 1075
+    },
+    {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/remux/avf/5850de2a-094b-4874-8dd3-4d84995b9796/segment.m4s?pathsig=8c953e4f~iOCiyFXpfUo4R4LM3Cb5e_GSQLcjnK0acDnfffWbC1o&r=dXMtd2VzdDE%3D&sid=1&st=audio",
+      "type": "xmlhttprequest",
+      "at": 1075
+    }
+  ],
+  "videos": [
+    {
+      "key": "v1",
+      "src": "blob:https://player.vimeo.com/c525b119",
+      "sources": [],
+      "isBlob": true,
+      "paused": false,
+      "ended": false,
+      "currentTime": 0,
+      "duration": 62,
+      "live": false,
+      "width": 802,
+      "height": 451,
+      "videoWidth": 0,
+      "videoHeight": 0,
+      "muted": true,
+      "readyState": 1,
+      "error": null,
+      "visible": true,
+      "inShadowRoot": false,
+      "mseMimeTypes": []
+    }
+  ],
+  "manifests": {
+    "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/primary/sub/170-de,171-es,140662-en,4678937-fr/playlist.m3u8?ext-subs=1&locale=en&omit=av1-hevc-opus&pathsig=8c953e4f~kzSnJQR7njaukb-HcxmqznrXRj4HBt-gpcKDc04qHlU&pssh=0&r=dXM%3D&rh=4Dvbcs&sf=fmp4": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "master",
+      "live": false,
+      "maxHeight": 720,
+      "variantCount": 4,
+      "audioTracks": 2,
+      "subtitleTracks": 4,
+      "codecs": [
+        "avc1.64001F",
+        "mp4a.40.2",
+        "avc1.42C01E"
+      ],
+      "encryption": "drm",
+      "drmSystems": [
+        "Widevine",
+        "PlayReady"
+      ],
+      "duration": 61.853437,
+      "segmentFormat": "fmp4",
+      "childKeys": [
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/5850de2a/media.m3u8?pathsig=8c953e4f~C9XYCpryQOwby2wkh09laJtSIxxop8YuhmsLnJ3OUDk&qsr=1&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/3e8cd9c0/media.m3u8?pathsig=8c953e4f~UVugnmGnGuTDBksqyPVvAtPRvMSG06SXvYr1Lfcso2k&qsr=1&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/ec6cca58/media.m3u8?pathsig=8c953e4f~Okb30pphmqK7DPrafBPJ_4OwY7U2ZK6EGSakQEL5pQw&qsr=1&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/a565ff5d/media.m3u8?pathsig=8c953e4f~98c8U9X1bXl_qrAwbpTYwUAjvYLMvZFVwG7W7vxlmws&qsr=1&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/sub/171/media.m3u8?d=61.853437&pathsig=8c953e4f~HnXgK1UkupAinJ4n2GrRXidg4DbCJBrZx6Z1DlEAYIw&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/sub/170/media.m3u8?d=61.853437&pathsig=8c953e4f~nbptlrgc3fvcfSkkMkp3dQRvuODGPY2MLlO0TI5Hh_4&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/sub/140662/media.m3u8?d=61.853437&pathsig=8c953e4f~aaHZfqIPcPo5bB-iH45StsSm9vVELC1RCzOv0NfmfVE&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/sub/4678937/media.m3u8?d=61.853437&pathsig=8c953e4f~4ojuJIt374JgY01lCREAtIwNY9TTtm451Kg8_hW8-vk&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/3e8cd9c0/media.m3u8?pathsig=8c953e4f~UVugnmGnGuTDBksqyPVvAtPRvMSG06SXvYr1Lfcso2k&qsr=1&r=dXMtY2VudHJhbDE=",
+        "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/5850de2a/media.m3u8?pathsig=8c953e4f~C9XYCpryQOwby2wkh09laJtSIxxop8YuhmsLnJ3OUDk&qsr=1&r=dXMtY2VudHJhbDE="
+      ]
+    },
+    "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/5850de2a/media.m3u8?pathsig=8c953e4f~C9XYCpryQOwby2wkh09laJtSIxxop8YuhmsLnJ3OUDk&qsr=1&r=dXMtY2VudHJhbDE%3D&st=audio": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "media",
+      "live": false,
+      "variantCount": 0,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [],
+      "encryption": "drm",
+      "drmSystems": [
+        "Widevine",
+        "PlayReady"
+      ],
+      "duration": 61.866668,
+      "segmentFormat": "fmp4",
+      "childKeys": []
+    },
+    "https://vod-adaptive-ak.vimeocdn.com/exp=1793312033~acl=%2Fccfaa6de-0af0-44cb-a61a-8ecebadb6ad1%2Fpsid%3D13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433%2F%2A~hmac=e7c7e40275fdbc35d4fc0cfbc205f56f3e81c590a7dfc79e7fecf03be703ea68/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=13465ad7f96ee232c4d37c2bd0c5710e94a5903f1793308433/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/ccfaa6de/avf/5850de2a/media.m3u8?pathsig=8c953e4f~C9XYCpryQOwby2wkh09laJtSIxxop8YuhmsLnJ3OUDk&qsr=1&r=dXMtY2VudHJhbDE%3D&st=video": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "media",
+      "live": false,
+      "variantCount": 0,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [],
+      "encryption": "drm",
+      "drmSystems": [
+        "Widevine",
+        "PlayReady"
+      ],
+      "duration": 61.853437,
+      "segmentFormat": "fmp4",
+      "childKeys": []
+    }
+  },
+  "expect": {
+    "main": "playlist.m3u8",
+    "mainKind": "hls",
+    "primary": [
+      "playlist.m3u8"
+    ],
+    "hidden": [
+      "media.m3u8",
+      "segment.m4s"
+    ],
+    "mediaSource": true,
+    "level": "unsupported",
+    "note": "DRM-protected"
+  }
+}

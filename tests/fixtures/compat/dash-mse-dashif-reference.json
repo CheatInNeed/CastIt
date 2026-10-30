@@ -1,0 +1,131 @@
+{
+  "name": "dash-mse-dashif-reference",
+  "category": "DASH streaming (MediaSource player)",
+  "about": "DASH-IF reference player (dash.js): MPD with numbered .m4v/.m4a pieces; the player switches 480p → 4K, leaving a 2-piece 480p folder.",
+  "pageUrl": "https://reference.dashif.org/dash.js/latest/samples/dash-if-reference-player/index.html",
+  "capturedAt": "2026-10-29T21:05:00.000Z",
+  "requests": [
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
+      "type": "xmlhttprequest",
+      "at": 18737
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_480x270_600k/bbb_30fps_480x270_600k_0.m4v",
+      "type": "xmlhttprequest",
+      "at": 18849
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_0.m4a",
+      "type": "xmlhttprequest",
+      "at": 18850
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_480x270_600k/bbb_30fps_480x270_600k_1.m4v",
+      "type": "xmlhttprequest",
+      "at": 18875
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_1.m4a",
+      "type": "xmlhttprequest",
+      "at": 18877
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_3840x2160_12000k/bbb_30fps_3840x2160_12000k_0.m4v",
+      "type": "xmlhttprequest",
+      "at": 18905
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_3840x2160_12000k/bbb_30fps_3840x2160_12000k_1.m4v",
+      "type": "xmlhttprequest",
+      "at": 18997
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_3840x2160_12000k/bbb_30fps_3840x2160_12000k_2.m4v",
+      "type": "xmlhttprequest",
+      "at": 19049
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_3840x2160_12000k/bbb_30fps_3840x2160_12000k_3.m4v",
+      "type": "xmlhttprequest",
+      "at": 19154
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_2.m4a",
+      "type": "xmlhttprequest",
+      "at": 19393
+    },
+    {
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_3.m4a",
+      "type": "xmlhttprequest",
+      "at": 19406
+    }
+  ],
+  "videos": [
+    {
+      "key": "v1",
+      "sources": [],
+      "isBlob": true,
+      "paused": false,
+      "ended": false,
+      "currentTime": 11,
+      "duration": 635,
+      "live": false,
+      "width": 635,
+      "height": 357,
+      "videoWidth": 3840,
+      "videoHeight": 2160,
+      "muted": false,
+      "readyState": 4,
+      "error": null,
+      "visible": true,
+      "inShadowRoot": false,
+      "mseMimeTypes": [],
+      "src": "blob:https://reference.dashif.org/fecf5414"
+    }
+  ],
+  "manifests": {
+    "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd": {
+      "kind": "dash",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "mpd",
+      "live": false,
+      "maxHeight": 2160,
+      "variantCount": 0,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [
+        "avc1.64001f",
+        "avc1.640028",
+        "avc1.64000d",
+        "avc1.640015",
+        "avc1.64001e",
+        "avc1.640033",
+        "mp4a.40.5"
+      ],
+      "encryption": "none",
+      "drmSystems": [],
+      "duration": 634.566,
+      "childKeys": []
+    }
+  },
+  "expect": {
+    "main": "bbb_30fps.mpd",
+    "mainKind": "dash",
+    "primary": [
+      "bbb_30fps.mpd"
+    ],
+    "hidden": [
+      "bbb_30fps_480x270_600k_0.m4v",
+      "bbb_30fps_480x270_600k_1.m4v",
+      "bbb_30fps_3840x2160_12000k_2.m4v",
+      "bbb_a64k_2.m4a"
+    ],
+    "level": "likely",
+    "mediaSource": true
+  }
+}

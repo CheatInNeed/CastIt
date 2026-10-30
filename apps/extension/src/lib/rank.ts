@@ -42,9 +42,12 @@ const SERIES_FILE = /^(.*?)(\d+)(\.(?:m4v|mp4|m4s|m4a|ts|aac|webm|cmfv|cmfa|mp3)
  * at least three files in the same folder and frame whose names differ only by a running number,
  * none of them played directly by a <video> element. Real separate videos (episode1.mp4,
  * episode2.mp4) are rarely all downloaded, and when one is playing it is referenced by the page.
+ * In a frame that also loaded an HLS/DASH playlist, two pieces suffice: adaptive players switch
+ * quality after a couple of segments, leaving short runs in the first quality's folder.
  */
 export function numberedSeries(candidates: NetworkCandidate[], playedUrls: Set<string>): Set<string> {
-  const groups = new Map<string, Array<{ id: string; n: number; key: string }>>();
+  const adaptiveFrames = new Set(candidates.filter((c) => c.kind === 'hls' || c.kind === 'dash').map((c) => c.frameId));
+  const groups = new Map<string, Array<{ id: string; n: number; key: string; frameId: number }>>();
   for (const c of candidates) {
     if (c.kind === 'hls' || c.kind === 'dash') continue;
     const url = safeUrl(c.url);
@@ -54,12 +57,13 @@ export function numberedSeries(candidates: NetworkCandidate[], playedUrls: Set<s
     if (!m) continue;
     const group = `${c.frameId}|${url.host}${url.pathname.slice(0, slash + 1)}${m[1]}#${m[3]!.toLowerCase()}`;
     const list = groups.get(group) ?? [];
-    list.push({ id: c.id, n: Number(m[2]), key: dedupeKey(c.url) });
+    list.push({ id: c.id, n: Number(m[2]), key: dedupeKey(c.url), frameId: c.frameId });
     groups.set(group, list);
   }
   const ids = new Set<string>();
   for (const list of groups.values()) {
-    if (list.length < 3 || list.some((item) => playedUrls.has(item.key))) continue;
+    const minimum = adaptiveFrames.has(list[0]!.frameId) ? 2 : 3;
+    if (list.length < minimum || list.some((item) => playedUrls.has(item.key))) continue;
     const numbers = list.map((item) => item.n);
     const span = Math.max(...numbers) - Math.min(...numbers) + 1;
     if (span <= list.length * 3) for (const item of list) ids.add(item.id);

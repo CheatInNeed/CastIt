@@ -77,6 +77,11 @@ describe('helpers', () => {
   it('labels URLs with decoded file names', () => {
     expect(labelForUrl('https://e.com/v/My%20Movie.mp4?sig=1')).toBe('My Movie.mp4');
     expect(labelForUrl('https://e.com/')).toBe('e.com');
+    // Generic or empty names get their (short) folder, so lists of streams stay distinguishable.
+    expect(labelForUrl('https://demo.unified-streaming.com/k8s/live/scte35.isml/.m3u8')).toBe('scte35.isml/.m3u8');
+    expect(labelForUrl('https://cdn.e.com/show-42/master.m3u8?token=x')).toBe('show-42/master.m3u8');
+    expect(labelForUrl('https://cdn.e.com/a-very-long-folder-name-with-ids-1234567890/playlist.m3u8')).toBe('playlist.m3u8');
+    expect(labelForUrl('https://cdn.e.com/master.m3u8')).toBe('master.m3u8');
   });
 
   it('reads total sizes', () => {

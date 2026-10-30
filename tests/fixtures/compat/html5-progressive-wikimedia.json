@@ -1,0 +1,94 @@
+{
+  "name": "html5-progressive-wikimedia",
+  "category": "HTML5 video (progressive files)",
+  "about": "Wikimedia Commons file page: plain <video> with four <source> transcodes (VP9 WebM, MPEG-4 MOV), plus two empty placeholder <video> elements.",
+  "pageUrl": "https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm",
+  "capturedAt": "2026-10-29T21:10:00.000Z",
+  "requests": [
+    {
+      "url": "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.480p.vp9.webm",
+      "type": "video",
+      "at": 3295
+    }
+  ],
+  "videos": [
+    {
+      "sources": [],
+      "isBlob": false,
+      "ended": false,
+      "error": null,
+      "inShadowRoot": false,
+      "mseMimeTypes": [],
+      "live": false,
+      "key": "v1",
+      "paused": false,
+      "currentTime": 0,
+      "duration": null,
+      "width": 754,
+      "height": 424,
+      "videoWidth": 0,
+      "videoHeight": 0,
+      "muted": true,
+      "readyState": 0,
+      "visible": true,
+      "poster": "https://thumb.wikimedia.org/x/960px--Big_Buck_Bunny_4K.webm.jpg"
+    },
+    {
+      "sources": [],
+      "isBlob": false,
+      "ended": false,
+      "error": null,
+      "inShadowRoot": false,
+      "mseMimeTypes": [],
+      "live": false,
+      "key": "v2",
+      "paused": true,
+      "currentTime": 0,
+      "duration": null,
+      "width": 77,
+      "height": 44,
+      "videoWidth": 0,
+      "videoHeight": 0,
+      "muted": false,
+      "readyState": 0,
+      "visible": false
+    },
+    {
+      "sources": [
+        "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.480p.vp9.webm",
+        "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.1080p.vp9.webm",
+        "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.240p.vp9.webm",
+        "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.mpeg4.mov"
+      ],
+      "isBlob": false,
+      "ended": false,
+      "error": null,
+      "inShadowRoot": false,
+      "mseMimeTypes": [],
+      "live": false,
+      "key": "v3",
+      "src": "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.1080p.vp9.webm",
+      "paused": false,
+      "currentTime": 54,
+      "duration": 635,
+      "width": 802,
+      "height": 1157,
+      "videoWidth": 1920,
+      "videoHeight": 1080,
+      "muted": false,
+      "readyState": 4,
+      "visible": true
+    }
+  ],
+  "manifests": {},
+  "expect": {
+    "main": "Big_Buck_Bunny_4K.webm.1080p.vp9.webm",
+    "mainKind": "progressive",
+    "primary": [
+      "Big_Buck_Bunny_4K.webm.1080p.vp9.webm"
+    ],
+    "level": "possible",
+    "note": "older Chromecasts",
+    "mediaSource": false
+  }
+}

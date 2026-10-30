@@ -1,0 +1,159 @@
+{
+  "name": "hls-mse-hlsjs-demo",
+  "category": "HLS streaming (MediaSource player)",
+  "about": "hls.js demo page: blob: player fed by an HLS master with several variants and TS segments.",
+  "pageUrl": "https://hlsjs.video-dev.org/demo/",
+  "capturedAt": "2026-10-29T21:00:00.000Z",
+  "requests": [
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+      "type": "xmlhttprequest",
+      "at": 342
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_0/193039199_mp4_h264_aac_hd_7.m3u8",
+      "type": "xmlhttprequest",
+      "at": 497
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_0/url_462/193039199_mp4_h264_aac_hd_7.ts",
+      "type": "xmlhttprequest",
+      "at": 534
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_8/193039199_mp4_h264_aac_fhd_7.m3u8",
+      "type": "xmlhttprequest",
+      "at": 884
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_8/url_591/193039199_mp4_h264_aac_fhd_7.ts",
+      "type": "xmlhttprequest",
+      "at": 979
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_8/url_592/193039199_mp4_h264_aac_fhd_7.ts",
+      "type": "xmlhttprequest",
+      "at": 1079
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_8/url_593/193039199_mp4_h264_aac_fhd_7.ts",
+      "type": "xmlhttprequest",
+      "at": 1179
+    },
+    {
+      "url": "https://test-streams.mux.dev/x36xhzz/url_8/url_594/193039199_mp4_h264_aac_fhd_7.ts",
+      "type": "xmlhttprequest",
+      "at": 1279
+    }
+  ],
+  "videos": [
+    {
+      "key": "v1",
+      "sources": [],
+      "isBlob": true,
+      "paused": false,
+      "ended": false,
+      "currentTime": 121,
+      "duration": 635,
+      "live": false,
+      "width": 807,
+      "height": 454,
+      "videoWidth": 1920,
+      "videoHeight": 1080,
+      "muted": true,
+      "readyState": 4,
+      "error": null,
+      "visible": true,
+      "inShadowRoot": false,
+      "mseMimeTypes": [],
+      "src": "blob:https://hlsjs.video-dev.org/e15e2af9"
+    }
+  ],
+  "manifests": {
+    "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "master",
+      "live": false,
+      "maxHeight": 1080,
+      "variantCount": 5,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [
+        "mp4a.40.2",
+        "avc1.64001f",
+        "mp4a.40.5",
+        "avc1.42000d",
+        "avc1.420016",
+        "avc1.640028"
+      ],
+      "encryption": "none",
+      "drmSystems": [],
+      "duration": 634.584,
+      "segmentFormat": "ts",
+      "childKeys": [
+        "https://test-streams.mux.dev/x36xhzz/url_0/193039199_mp4_h264_aac_hd_7.m3u8",
+        "https://test-streams.mux.dev/x36xhzz/url_2/193039199_mp4_h264_aac_ld_7.m3u8",
+        "https://test-streams.mux.dev/x36xhzz/url_4/193039199_mp4_h264_aac_7.m3u8",
+        "https://test-streams.mux.dev/x36xhzz/url_6/193039199_mp4_h264_aac_hq_7.m3u8",
+        "https://test-streams.mux.dev/x36xhzz/url_8/193039199_mp4_h264_aac_fhd_7.m3u8"
+      ]
+    },
+    "https://test-streams.mux.dev/x36xhzz/url_0/193039199_mp4_h264_aac_hd_7.m3u8": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "media",
+      "live": false,
+      "variantCount": 0,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [],
+      "encryption": "none",
+      "drmSystems": [],
+      "duration": 634.584,
+      "segmentFormat": "ts",
+      "childKeys": []
+    },
+    "https://test-streams.mux.dev/x36xhzz/url_8/193039199_mp4_h264_aac_fhd_7.m3u8": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "media",
+      "live": false,
+      "variantCount": 0,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [],
+      "encryption": "none",
+      "drmSystems": [],
+      "duration": 634.567,
+      "segmentFormat": "ts",
+      "childKeys": []
+    }
+  },
+  "expect": {
+    "main": "x36xhzz.m3u8",
+    "mainKind": "hls",
+    "primary": [
+      "x36xhzz.m3u8"
+    ],
+    "hidden": [
+      "193039199_mp4_h264_aac_hd_7.m3u8",
+      "193039199_mp4_h264_aac_fhd_7.m3u8",
+      "193039199_mp4_h264_aac_fhd_7.ts"
+    ],
+    "level": "likely",
+    "mediaSource": true
+  }
+}

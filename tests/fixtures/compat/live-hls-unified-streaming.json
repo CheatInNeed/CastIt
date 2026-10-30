@@ -1,0 +1,120 @@
+{
+  "name": "live-hls-unified-streaming",
+  "category": "Live streaming (HLS)",
+  "about": "Unified Streaming's public live channel in hls.js: master named just '.m3u8', no #EXT-X-ENDLIST. hls.js reports a finite duration (the rewind window), so only playlist inspection reveals it is live.",
+  "pageUrl": "https://hlsjs.video-dev.org/demo/?src=https%3A%2F%2Fdemo.unified-streaming.com%2Fk8s%2Flive%2Fscte35.isml%2F.m3u8",
+  "capturedAt": "2026-10-30T09:10:00.000Z",
+  "requests": [
+    {
+      "url": "https://demo.unified-streaming.com/k8s/live/scte35.isml/.m3u8",
+      "type": "xmlhttprequest",
+      "at": 144
+    },
+    {
+      "url": "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000.m3u8",
+      "type": "xmlhttprequest",
+      "at": 244
+    },
+    {
+      "url": "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000-934049996.ts",
+      "type": "xmlhttprequest",
+      "at": 393
+    },
+    {
+      "url": "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000-934049997.ts",
+      "type": "xmlhttprequest",
+      "at": 523
+    },
+    {
+      "url": "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000-934049998.ts",
+      "type": "xmlhttprequest",
+      "at": 653
+    },
+    {
+      "url": "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000-934049999.ts",
+      "type": "xmlhttprequest",
+      "at": 783
+    }
+  ],
+  "videos": [
+    {
+      "key": "v1",
+      "src": "blob:https://hlsjs.video-dev.org/ed072f4c",
+      "sources": [],
+      "isBlob": true,
+      "paused": false,
+      "ended": false,
+      "currentTime": 604,
+      "duration": 612,
+      "live": false,
+      "width": 807,
+      "height": 454,
+      "videoWidth": 1280,
+      "videoHeight": 720,
+      "muted": true,
+      "readyState": 4,
+      "error": null,
+      "visible": true,
+      "inShadowRoot": false,
+      "mseMimeTypes": []
+    }
+  ],
+  "manifests": {
+    "https://demo.unified-streaming.com/k8s/live/scte35.isml/.m3u8": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "master",
+      "live": true,
+      "maxHeight": 720,
+      "variantCount": 2,
+      "audioTracks": 1,
+      "subtitleTracks": 0,
+      "codecs": [
+        "mp4a.40.2",
+        "avc1.42C01F"
+      ],
+      "encryption": "none",
+      "drmSystems": [],
+      "segmentFormat": "ts",
+      "childKeys": [
+        "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000.m3u8",
+        "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000.m3u8"
+      ]
+    },
+    "https://demo.unified-streaming.com/k8s/live/scte35.isml/scte35-audio_eng=128000-video=1000000.m3u8": {
+      "kind": "hls",
+      "inspectedAt": 0,
+      "reachable": true,
+      "status": 200,
+      "cors": true,
+      "valid": true,
+      "role": "media",
+      "live": true,
+      "variantCount": 0,
+      "audioTracks": 0,
+      "subtitleTracks": 0,
+      "codecs": [],
+      "encryption": "none",
+      "drmSystems": [],
+      "segmentFormat": "ts",
+      "childKeys": []
+    }
+  },
+  "expect": {
+    "main": "scte35.isml/.m3u8",
+    "mainKind": "hls",
+    "primary": [
+      "scte35.isml/.m3u8"
+    ],
+    "hidden": [
+      "scte35-audio_eng=128000-video=1000000.m3u8"
+    ],
+    "live": true,
+    "level": "likely",
+    "mediaSource": true
+  }
+}

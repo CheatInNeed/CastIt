@@ -2,7 +2,7 @@
 
 Castit is a Chrome (Manifest V3) extension that casts the **actual media stream** of a web page (HLS, DASH, MP4, WebM) to a Chromecast or Google Cast device. It never mirrors, captures or records the tab.
 
-> **Status: Phase 6 (automatic casting strategy).** Direct Casting works end to end. Detection covers embedded cross-origin players, MediaSource players, shadow DOM and HLS/DASH manifests. The optional local companion relays streams the Chromecast can't fetch itself, and with FFmpeg installed it converts formats the Chromecast can't play. Castit picks the cheapest method that works (direct → relay → convert), checks the TV really plays, recovers automatically when it doesn't, and explains what it tried. While casting, the website's own player works as the remote control.
+> **Status: Phase 7 (compatibility testing).** Direct Casting works end to end. Detection covers embedded cross-origin players, MediaSource players, shadow DOM and HLS/DASH manifests. The optional local companion relays streams the Chromecast can't fetch itself, and with FFmpeg installed it converts formats the Chromecast can't play. Castit picks the cheapest method that works (direct → relay → convert), checks the TV really plays, recovers automatically when it doesn't, and explains what it tried. While casting, the website's own player works as the remote control.
 
 ## How it works
 
@@ -84,6 +84,8 @@ Deploy `apps/controller/dist` to that URL. The build uses relative asset paths, 
 | `npm run dev:controller` | Starts the controller on http://localhost:5173 |
 | `npm run dev:extension` | Rebuilds the extension on every change |
 | `npm run dev:testpage` | Serves `tests/manual` on http://localhost:5174 |
+| `npm run compat` | Shows what Castit would list and choose on each recorded real site |
+| `npm run compat:site` | Starts the local movy-like test site (aggregator → embedded player → protected video server) |
 | `npm run companion` | Starts the local streaming companion (add `-- --pair` to pair another browser, `-- --help` for options, `-- --ffmpeg <path>` for a custom FFmpeg) |
 
 ## The local streaming companion (optional)
@@ -249,6 +251,55 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 19. **Companion stopped:** stop the companion and set **Always via companion**. Casting should fail with "The local companion is not running or not paired…".
 20. **Real sites:** try a few sites that embed third-party players. Note what the popup lists and whether casting works. These reports drive Phase 7.
 
+## Compatibility
+
+### How sites are tested
+
+- **Recorded real sites (regression tests).** A snippet (`tests/compat/tools/capture-snippet.js`) is run on a real site while it plays. It records what Castit's network observer and page script would see: the stream requests (long runs of segments trimmed) and the `<video>` elements. Manifests are then inspected exactly as the popup does (`tests/compat/tools/inspect-manifests.ts`). Each recording lives in `tests/fixtures/compat/` and is replayed through Castit's real detection, ranking and castability code on every `npm test`. `npm run compat` prints the outcome per site.
+- **A local movy-like site (`npm run compat:site`).** It copies the architecture of aggregator streaming sites without visiting any:
+  - an aggregator page with a pop-up ad and an ad iframe;
+  - a player embedded from *another* origin, with click-to-play, a skippable pre-roll ad, and a stream address fetched from an API (obfuscated);
+  - a video server with signed links that expire after 10 minutes, Referer (hotlink) checks, and CORS limited to the player.
+
+  It relays a public test stream and logs every refusal. `tests/compat/movy-sim.test.ts` checks the whole path offline.
+
+### Results
+
+| Category | Site | What Castit lists and picks | How it should reach the TV | On a real Chromecast |
+|---|---|---|---|---|
+| HTML5 video, plain file | Wikimedia Commons (VP9 WebM, 4 `<source>`s, 2 empty placeholder players) | The 1080p file being played; "Maybe castable" (VP9) | Ultra / Google TV: direct. Older Chromecasts: converted by FFmpeg | Not yet |
+| HTML5 video, redirected file | Test page scenario 1 (archive.org) | The page's own URL, not the redirect target | Direct | ✓ |
+| HLS, MediaSource player | hls.js demo | The master only: 1080p, H.264, "Castable"; variants and segments hidden | Direct | ✓ (test page scenario 2) |
+| DASH, MediaSource player | DASH-IF reference player | The `.mpd` only; numbered pieces hidden, even after a quality switch | Direct | ✓ (via companion) |
+| Live HLS | Unified Streaming live channel | The master, **LIVE** (found by playlist inspection; the player reports a finite rewind window) | Direct, as a live stream | Not yet |
+| Cross-origin embedded player | Test page scenario 4 | "… in player 127.0.0.1"; the page's player is the remote | Direct | ✓ |
+| Embedded player with DRM | Vimeo embed | **"Not castable: DRM-protected (Widevine, PlayReady)"**. Vimeo encrypts even public videos | Refused with that explanation; Castit never bypasses DRM | Correct by design |
+| Signed, expiring links | Vimeo (signature in the path), movy-like site | Original signed URL kept exactly; an expired link gets "expired, reload the page" | Direct or relay | ✓ (relay); expiry not yet |
+| Hotlink-protected embed (movy-like) | Local test site | The stream from the embedded player; ads marked AD | Direct refused (403) → companion relay with the player's Referer | **Your test** |
+| Logged-in sites | – | Castit never sends cookies | Usually works directly (signed links); otherwise "authentication required" | **Your test** |
+| Proprietary services (YouTube) | Not recorded: the embed refused to load in the test browser | No castable stream expected; YouTube streams in pieces only its own player understands | – | Not tested |
+
+**Fixed because of these recordings:**
+- **Quality switches:** after a player switched quality, the leftover pieces in the first quality's folder were listed as separate videos.
+- **WebM rating:** WebM was rated "Castable" although it's usually VP9.
+- **Nameless entries:** the stream named just `.m3u8` showed as a nameless entry; generic names like `master.m3u8` now show their folder.
+
+### Your TV checklist for Phase 7
+
+Keep **Automatic** selected and the companion paired. On each site: play the video, open Castit, and check that the pre-selected entry is the video you were watching. Then cast. If anything is off, click **Copy diagnostics** and send me the text.
+
+1. **Live stream:** open the live channel above (`https://hlsjs.video-dev.org/demo/?src=https%3A%2F%2Fdemo.unified-streaming.com%2Fk8s%2Flive%2Fscte35.isml%2F.m3u8`) and cast. The TV should play it live, with no seek bar.
+2. **VP9 file:** cast the Wikimedia video. If your Chromecast predates the Ultra, the attempts card should show a conversion (needs FFmpeg) or explain the codec.
+3. **Movy-like site:**
+   1. Run `npm run compat:site` and restart the companion with `npm run companion -- --allow-private`.
+   2. Open the printed `…/watch/1` address in Chrome, press ▶ in the player and skip the ad.
+   3. Cast.
+
+   Expected: the site's terminal logs a `403 hotlink protection` for the Chromecast, then `200 … (referer ok)` once Castit relays. The popup's *What Castit tried* card shows that path.
+4. **Expired link:** on the movy-like site, wait 10+ minutes after pressing ▶, then cast. You should get a clear "expired, reload the page" message.
+5. **Your own sites:** two or three sites you actually use, including one where you're logged in.
+6. **DRM check:** a Vimeo video should be listed as *Not castable: DRM-protected*. That's expected.
+
 ## Design notes
 
 - **No tab capture anywhere.** The manifest has no `tabCapture` or `desktopCapture`. The Chromecast fetches and decodes the stream itself.
@@ -323,5 +374,5 @@ With `npm run dev:controller` and `npm run dev:testpage` running and the extensi
 4. ✅ FFmpeg: codec analysis per Chromecast type, stream copy/remux, audio-only conversion, hardware-accelerated transcoding, seekable segmented HLS, WebVTT subtitles, cleanup
 5. ✅ Website as remote control: page play/seek/volume/speed → TV, TV state → page, loop prevention, embedded players, restore on cast end
 6. ✅ Automatic strategy: one decision engine, TV error codes, freeze detection, recovery with resume, same-player alternatives, diagnostics
-7. Compatibility testing across site categories
+7. ✅ Compatibility: recorded real sites as regression tests, a local movy-like test site, fixes from the findings, results matrix *(your TV checklist pending)*
 8. Polish, reconnection, production builds

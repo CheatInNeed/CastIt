@@ -70,6 +70,13 @@ export function assessCastability(c: RankedCandidate, probe?: ProbeResult): Cast
         code: 'UNSUPPORTED_CONTAINER',
         message: `Chromecast cannot play ${c.container.toUpperCase()} files directly; the local companion can convert them with FFmpeg.`,
       });
+    case 'webm':
+      // WebM is mostly VP9 today; Chromecasts before the Ultra decode only VP8.
+      if (!c.audioOnly) {
+        transcodeHelps = 'WebM (VP9) may need converting for older Chromecasts';
+        lower('possible', 'WebM video is usually VP9, which older Chromecasts (before the Ultra) can’t decode; the local companion can convert it.');
+      }
+      break;
     case 'mkv':
     case 'ogg':
     case 'mov':
