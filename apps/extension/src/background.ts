@@ -512,6 +512,7 @@ async function popupState(tabId: number): Promise<PopupState> {
     pageTitle: tab?.title,
     candidates,
     mediaSourceDetected: mediaSourceDetected(state),
+    drmKeySystems: [...new Set(Object.values(state.frames).flatMap((f) => f.emeKeySystems ?? []))],
     castStatus: (session[KEY.castStatus] as CastStatus | undefined) ?? null,
     controllerConnected: controllerPort !== null,
     controllerUrl: CONTROLLER_URL,

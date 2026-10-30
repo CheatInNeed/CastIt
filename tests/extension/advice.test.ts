@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CastErrorCode } from '@castit/shared';
-import { adviceFor } from '../../apps/extension/src/lib/advice.ts';
+import { adviceFor, drmNames, emptyPageExplanation } from '../../apps/extension/src/lib/advice.ts';
 
 const e = (code: CastErrorCode) => ({ code, message: 'x' });
 const none = { companion: 'offline' as const, ffmpeg: false };
@@ -25,5 +25,22 @@ describe('adviceFor', () => {
     expect(adviceFor(e('NO_DEVICE'), none)).toMatch(/same Wi-Fi/);
     expect(adviceFor(e('STREAM_UNAVAILABLE'), none)).toMatch(/Reload the page/);
     expect(adviceFor(e('SESSION_CANCELLED'), none)).toBeUndefined();
+  });
+});
+
+describe('emptyPageExplanation', () => {
+  it('names DRM first (Netflix-style pages)', () => {
+    expect(drmNames(['com.widevine.alpha', 'com.microsoft.playready.recommendation', 'com.widevine.alpha'])).toEqual(['Widevine', 'PlayReady']);
+    const text = emptyPageExplanation({ drmKeySystems: ['com.widevine.alpha'], mediaSource: true });
+    expect(text).toMatch(/DRM-protected video \(Widevine\)/);
+    expect(text).toMatch(/own Cast button/);
+  });
+
+  it('points private-format players (YouTube-style) to the site’s own Cast button', () => {
+    expect(emptyPageExplanation({ drmKeySystems: [], mediaSource: true })).toMatch(/private format.*own Cast button/);
+  });
+
+  it('falls back to the plain hint', () => {
+    expect(emptyPageExplanation({ drmKeySystems: [], mediaSource: false })).toMatch(/Start playing the video/);
   });
 });

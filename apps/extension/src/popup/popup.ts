@@ -16,7 +16,7 @@ import {
   type PopupState,
   type RemoteCommand,
 } from '@castit/shared';
-import { adviceFor } from '../lib/advice.ts';
+import { adviceFor, emptyPageExplanation } from '../lib/advice.ts';
 import { isPrimaryCandidate, selectMainCandidate } from '../lib/rank.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -244,9 +244,7 @@ function renderCandidates(s: PopupState): void {
 
   const empty = $('empty');
   empty.hidden = s.candidates.length > 0;
-  empty.textContent = s.mediaSourceDetected
-    ? 'A MediaSource (blob:) player is active, but no HLS/DASH manifest was observed. Reload the page and start the video again so Castit can see the stream requests.'
-    : 'No video detected yet. Start playing the video, then reopen Castit.';
+  empty.textContent = emptyPageExplanation({ drmKeySystems: s.drmKeySystems ?? [], mediaSource: s.mediaSourceDetected });
 
   const selected = s.candidates.find((c) => c.id === selectedId);
   const castButton = $<HTMLButtonElement>('cast');

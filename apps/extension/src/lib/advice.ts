@@ -6,6 +6,34 @@ export interface AdviceContext {
   ffmpeg: boolean;
 }
 
+const KEY_SYSTEM_NAMES: Array<[RegExp, string]> = [
+  [/widevine/i, 'Widevine'],
+  [/playready|microsoft/i, 'PlayReady'],
+  [/fps|fairplay|apple/i, 'FairPlay'],
+  [/clearkey/i, 'ClearKey'],
+];
+
+/** Readable DRM system names from EME key-system strings (e.g. com.widevine.alpha → Widevine). */
+export function drmNames(keySystems: string[]): string[] {
+  const names = keySystems.map((k) => KEY_SYSTEM_NAMES.find(([re]) => re.test(k))?.[1] ?? k);
+  return [...new Set(names)];
+}
+
+/**
+ * Why the popup lists nothing castable, in plain words. Order matters: a DRM page (Netflix, Disney+…)
+ * says so first; a MediaSource player without any usable playlist (YouTube streams in its own
+ * format) points to the site's own Cast button before suggesting a reload.
+ */
+export function emptyPageExplanation(info: { drmKeySystems: string[]; mediaSource: boolean }): string {
+  if (info.drmKeySystems.length) {
+    return `This page plays DRM-protected video (${drmNames(info.drmKeySystems).join(', ')}). Castit can’t cast protected video and never bypasses DRM. Use the site’s own Cast button if it has one.`;
+  }
+  if (info.mediaSource) {
+    return 'The page’s player builds the video itself from pieces, and no playlist Castit can hand to a Chromecast was seen. Some sites (YouTube, for example) stream in a private format only their own player understands; use the site’s own Cast button there. Elsewhere, reload the page and start the video again so Castit sees the stream from the beginning.';
+  }
+  return 'No video detected yet. Start playing the video, then reopen Castit.';
+}
+
 const PAIR = 'Start the local companion (npm run companion) and pair it under “Local companion”';
 
 export function adviceFor(error: CastError, ctx: AdviceContext): string | undefined {

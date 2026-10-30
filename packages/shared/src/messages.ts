@@ -94,6 +94,8 @@ export interface PopupState {
   candidates: CandidateView[];
   /** A <video> plays a blob: (MediaSource) URL somewhere in the tab. */
   mediaSourceDetected: boolean;
+  /** EME key systems a player on the page attached (DRM in use), e.g. com.widevine.alpha. */
+  drmKeySystems: string[];
   castStatus: CastStatus | null;
   controllerConnected: boolean;
   controllerUrl: string;
